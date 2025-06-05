@@ -97,13 +97,29 @@ def analyze_dataset_repos(dataset_name: str, split: str = "test") -> Dict[str, D
             print(f"Warning: Error sorting pairs for repo {repo_name}: {e}")
             sorted_pairs = unique_pairs
         
-        # Get the earliest commit
+        # Get the earliest and latest commits
         earliest_commit = sorted_pairs[0][0] if sorted_pairs else None
         earliest_timestamp = sorted_pairs[0][1] if sorted_pairs else None
+        latest_commit = sorted_pairs[-1][0] if sorted_pairs else None
+        latest_timestamp = sorted_pairs[-1][1] if sorted_pairs else None
+        
+        # Calculate time interval
+        time_interval_years = None
+        if earliest_timestamp and latest_timestamp and len(sorted_pairs) > 1:
+            try:
+                earliest_dt = parse_created_at(earliest_timestamp)
+                latest_dt = parse_created_at(latest_timestamp)
+                time_interval_days = (latest_dt - earliest_dt).days
+                time_interval_years = round(time_interval_days / 365.25, 2)  # Account for leap years
+            except Exception:
+                time_interval_years = None
         
         result[repo_name] = {
             'oldest_base_commit': earliest_commit,
             'oldest_created_at': earliest_timestamp,
+            'latest_base_commit': latest_commit,
+            'latest_created_at': latest_timestamp,
+            'time_interval_years': time_interval_years,
             'commit_pairs': sorted_pairs,
             'total_instances': len(commit_pairs),
             'unique_commits': len(unique_pairs)
@@ -130,11 +146,14 @@ def print_repo_analysis(repo_analysis: Dict[str, Dict[str, Any]]):
                          reverse=True)
     
     print(f"\nAll repositories by instance count:")
-    print(f"{'Repository':<40} {'Instances':<10} {'Unique Commits':<15} {'Oldest Commit':<15}")
-    print("-" * 80)
+    print(f"{'Repository':<40} {'Instances':<10} {'Unique Commits':<15} {'Start Date':<12} {'End Date':<12} {'Time Span (years)':<17}")
+    print("-" * 116)
     
     for repo_name, data in sorted_repos:
-        print(f"{repo_name:<40} {data['total_instances']:<10} {data['unique_commits']:<15} {data['oldest_base_commit'][:12] if data['oldest_base_commit'] else 'N/A':<15}")
+        time_span = str(data['time_interval_years']) if data['time_interval_years'] is not None else 'N/A'
+        start_date = data['oldest_created_at'][:10] if data['oldest_created_at'] else 'N/A'
+        end_date = data['latest_created_at'][:10] if data['latest_created_at'] else 'N/A'
+        print(f"{repo_name:<40} {data['total_instances']:<10} {data['unique_commits']:<15} {start_date:<12} {end_date:<12} {time_span:<17}")
     
     # Show detailed info for first few repos
     print(f"\nDetailed information for first 3 repositories:")
@@ -142,6 +161,12 @@ def print_repo_analysis(repo_analysis: Dict[str, Dict[str, Any]]):
         print(f"\n{i+1}. Repository: {repo_name}")
         print(f"   Oldest commit: {data['oldest_base_commit']}")
         print(f"   Oldest timestamp: {data['oldest_created_at']}")
+        print(f"   Latest commit: {data['latest_base_commit']}")
+        print(f"   Latest timestamp: {data['latest_created_at']}")
+        if data['time_interval_years'] is not None:
+            print(f"   Time interval: {data['time_interval_years']} years")
+        else:
+            print(f"   Time interval: N/A (single commit or parsing error)")
         print(f"   Total instances: {data['total_instances']}")
         print(f"   Unique commits: {data['unique_commits']}")
         
@@ -153,7 +178,10 @@ def print_repo_analysis(repo_analysis: Dict[str, Dict[str, Any]]):
             print(f"   First 3 commit pairs:")
             for commit, timestamp in data['commit_pairs'][:3]:
                 print(f"     {commit[:12]} - {timestamp}")
-            print(f"     ... and {len(data['commit_pairs']) - 3} more")
+            print(f"   Last 3 commit pairs:")
+            for commit, timestamp in data['commit_pairs'][-3:]:
+                print(f"     {commit[:12]} - {timestamp}")
+            print(f"     ... and {len(data['commit_pairs']) - 6} more in between")
 
 
 def save_repo_analysis(repo_analysis: Dict[str, Dict[str, Any]], output_path: str):

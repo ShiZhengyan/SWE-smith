@@ -14,24 +14,15 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from ghapi.all import GhApi
-from pathlib import Path
 
-from swebench.harness.constants import (
-    BASE_IMAGE_BUILD_DIR,
-    ENV_IMAGE_BUILD_DIR,
-    INSTANCE_IMAGE_BUILD_DIR,
-    KEY_INSTANCE_ID,
-)
 from swebench.harness.docker_build import (
     build_env_images,
     build_instance_image,
     BuildImageError,
 )
-from swebench.harness.docker_utils import list_images, clean_images
 from swebench.harness.test_spec.test_spec import make_test_spec, TestSpec
 from swebench.harness.utils import (
     load_swebench_dataset,
-    run_threadpool,
     str2bool,
 )
 from swesmith.utils import get_repo_name
@@ -59,6 +50,7 @@ def create_repo_commit_mirror(repo: str, commit: str, org: str = ORG_NAME):
     """
     repo_name = get_repo_name(repo, commit)
     if does_repo_exist(repo_name):
+        print(f"[{repo}][{commit[:8]}] Mirror already exists: {repo_name}")
         return
     if repo_name in os.listdir():
         shutil.rmtree(repo_name)
@@ -71,8 +63,8 @@ def create_repo_commit_mirror(repo: str, commit: str, org: str = ORG_NAME):
             f"git checkout {commit}; "
             "rm -rf .git; "
             "git init; "
-            'git config user.name "swesmith"; '
-            'git config user.email "swesmith@anon.com"; '
+            'git config user.name "ZhengyanShi"; '
+            'git config user.email "zhengyan.shi.19@gmail.com"; '
             "rm -rf .github/workflows; "  # Remove workflows
             "git add .; "
             "git commit -m 'Initial commit'; "
@@ -90,30 +82,6 @@ def create_repo_commit_mirror(repo: str, commit: str, org: str = ORG_NAME):
             stderr=subprocess.DEVNULL,
         )
     print(f"[{repo}][{commit[:8]}] Mirror created successfully")
-
-
-def build_instance_image_with_mirror(
-    test_spec: TestSpec,
-    client: docker.DockerClient,
-    org: str = ORG_NAME,
-):
-    """
-    Build instance image for a TestSpec, creating repository mirror if needed.
-    """
-    # Extract repo and commit from instance data
-    repo = test_spec.repo
-    commit = test_spec.base_commit
-    
-    # Create repository mirror
-    create_repo_commit_mirror(repo, commit, org)
-    
-    # Build the instance image
-    build_instance_image(
-        test_spec=test_spec,
-        client=client,
-        logger=None,
-        nocache=False,
-    )
 
 
 def build_dataset_images(
@@ -137,6 +105,14 @@ def build_dataset_images(
     
     print(f"Building images for {len(dataset)} instances from {dataset_name}")
     
+    # Extract repo and commit info before creating test specs
+    repo_commit_map = {}
+    for instance in dataset:
+        instance_id = instance["instance_id"]
+        repo = instance["repo"]
+        base_commit = instance["base_commit"]
+        repo_commit_map[instance_id] = (repo, base_commit)
+    
     # Create TestSpecs for all instances
     test_specs = list(
         map(
@@ -148,11 +124,12 @@ def build_dataset_images(
     )
     
     client = docker.from_env()
-    existing_images = list_images(client)
     
-    # Build environment images first
-    print("Building environment images...")
-    build_env_images(client, dataset, force_rebuild, max_workers)
+    # Always create mirrors for all instances
+    print("Creating repository mirrors...")
+    for test_spec in test_specs:
+        repo, commit = repo_commit_map[test_spec.instance_id]
+        create_repo_commit_mirror(repo, commit)
     
     # Filter test specs that need instance images built
     specs_to_build = []
@@ -162,6 +139,7 @@ def build_dataset_images(
             try:
                 client.images.get(test_spec.instance_image_key)
                 image_exists = True
+                print(f"Instance image already exists: {test_spec.instance_image_key}")
             except docker.errors.ImageNotFound:
                 pass
         if not image_exists:
@@ -175,12 +153,42 @@ def build_dataset_images(
     for spec in specs_to_build:
         print(f"- {spec.instance_image_key}")
     
+    # Build only the environment images we need for the instances we're building
+    env_images_needed = {spec.env_image_key for spec in specs_to_build}
+    existing_env_images = set()
+    
+    for env_image_key in env_images_needed:
+        try:
+            client.images.get(env_image_key)
+            existing_env_images.add(env_image_key)
+            print(f"Environment image already exists: {env_image_key}")
+        except docker.errors.ImageNotFound:
+            pass
+    
+    # Only build environment images that don't exist and are needed
+    env_specs_to_build = [
+        spec for spec in specs_to_build 
+        if spec.env_image_key not in existing_env_images
+    ]
+    
+    if env_specs_to_build:
+        print(f"Building environment images for {len(env_specs_to_build)} instances...")
+        build_env_images(client, env_specs_to_build, force_rebuild, max_workers)
+    else:
+        print("All required environment images already exist.")
+    
     # Build instance images in parallel
     successful, failed = list(), list()
     
     def build_wrapper(test_spec):
         try:
-            build_instance_image_with_mirror(test_spec, client)
+            # build_instance_image will handle env image dependency
+            build_instance_image(
+                test_spec=test_spec,
+                client=client,
+                logger=None,
+                nocache=False,
+            )
             return test_spec.instance_id
         except Exception as e:
             print(f"Failed to build image for {test_spec.instance_id}: {e}")
@@ -216,9 +224,6 @@ def build_dataset_images(
     else:
         print(f"{len(failed)} instance images failed to build.")
     
-    # Clean up images if needed
-    clean_images(client, existing_images, "env", False)
-    
     return successful, failed
 
 
@@ -229,13 +234,13 @@ def main():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        required=True,
+        default="ZhengyanShi/SWE-bench_Verified_Temporal_9", 
         help="Name of dataset or path to JSON file.",
     )
     parser.add_argument(
         "--split", 
         type=str, 
-        default="test", 
+        default="train", 
         help="Split of the dataset"
     )
     parser.add_argument(

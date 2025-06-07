@@ -22,17 +22,55 @@ from huggingface_hub import HfApi, login
 
 
 def parse_created_at(created_at_str: str) -> datetime:
-    """Parse ISO format timestamp string to datetime object"""
+    """Parse ISO format timestamp string to datetime object with better error handling"""
+    if not created_at_str:
+        return datetime.min
+    
     try:
         # Handle format like "2023-04-16T14:24:42Z"
-        return datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-    except ValueError:
-        # Fallback for other formats
-        try:
+        if created_at_str.endswith('Z'):
+            return datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+        # Handle format like "2023-04-16T14:24:42+00:00"
+        elif '+' in created_at_str or created_at_str.count(':') >= 2:
+            return datetime.fromisoformat(created_at_str)
+        else:
+            # Handle format like "2023-04-16T14:24:42"
             return datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%S")
-        except ValueError:
-            print(f"Warning: Could not parse timestamp: {created_at_str}")
-            return datetime.min
+    except (ValueError, TypeError) as e:
+        print(f"Warning: Could not parse timestamp '{created_at_str}': {e}")
+        return datetime.min
+
+
+def validate_and_sort_by_timestamp(examples: List[Tuple[int, Dict]], repo_name: str) -> List[Tuple[int, Dict]]:
+    """
+    Validate timestamps and sort examples chronologically.
+    Returns sorted list with oldest first.
+    """
+    valid_examples = []
+    invalid_count = 0
+    
+    for idx, example in examples:
+        created_at = example.get('created_at', '')
+        parsed_dt = parse_created_at(created_at)
+        
+        if parsed_dt == datetime.min:
+            invalid_count += 1
+            continue
+            
+        valid_examples.append((idx, example, parsed_dt))
+    
+    if invalid_count > 0:
+        print(f"Warning: {invalid_count} examples in {repo_name} had invalid timestamps")
+    
+    if not valid_examples:
+        print(f"Error: No valid timestamps found for repository {repo_name}")
+        return []
+    
+    # Sort by parsed datetime (oldest first)
+    valid_examples.sort(key=lambda x: x[2])
+    
+    # Return without the parsed datetime
+    return [(idx, example) for idx, example, _ in valid_examples]
 
 
 def create_temporal_endpoints_dataset(dataset_name: str, split: str = "test") -> Tuple[List[Dict], Dict[str, Any]]:
@@ -90,16 +128,20 @@ def create_temporal_endpoints_dataset(dataset_name: str, split: str = "test") ->
     print(f"\nProcessing {len(filtered_repo_examples)} qualifying repositories...")
     
     for repo_name, examples in tqdm(filtered_repo_examples.items(), desc="Finding temporal endpoints", unit="repo"):
-        # Sort examples by created_at timestamp
-        try:
-            sorted_examples = sorted(examples, key=lambda x: parse_created_at(x[1]['created_at']))
-        except Exception as e:
-            print(f"Warning: Error sorting examples for repo {repo_name}: {e}")
-            sorted_examples = examples
+        # Validate and sort examples by created_at timestamp
+        sorted_examples = validate_and_sort_by_timestamp(examples, repo_name)
         
-        # Get oldest and newest examples
+        if len(sorted_examples) < 2:
+            print(f"Warning: Repository {repo_name} has insufficient valid timestamps, skipping")
+            continue
+        
+        # Get oldest and newest examples (sorted_examples is already oldest first)
         oldest_idx, oldest_example = sorted_examples[0]
         newest_idx, newest_example = sorted_examples[-1]
+        
+        # Verify we actually have different examples
+        if oldest_example['created_at'] == newest_example['created_at']:
+            print(f"Warning: Repository {repo_name} has identical timestamps for oldest/newest")
         
         # Calculate time span
         try:
@@ -116,6 +158,7 @@ def create_temporal_endpoints_dataset(dataset_name: str, split: str = "test") ->
         
         repo_stats[repo_name] = {
             'total_examples': len(examples),
+            'valid_timestamps': len(sorted_examples),
             'oldest_created_at': oldest_example['created_at'],
             'newest_created_at': newest_example['created_at'],
             'time_span_years': time_span_years

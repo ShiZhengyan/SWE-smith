@@ -90,7 +90,7 @@ def main(
 
         # Construct installation script
         installation_cmds = [
-            ". /opt/miniconda3/bin/activate",
+            ". ~/anaconda3/bin/activate",
             f"conda create -n {ENV_NAME} python={python_version} -yq",
             f"conda activate {ENV_NAME}",
             f". {install_script}",

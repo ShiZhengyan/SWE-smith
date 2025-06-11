@@ -12,8 +12,65 @@ import json
 from pathlib import Path
 
 from swebench.harness.constants import KEY_INSTANCE_ID
+from swebench.harness.test_spec.test_spec import make_test_spec
+from swebench.harness.utils import load_swebench_dataset
 from swesmith.constants import LOG_DIR_BUG_GEN, KEY_IMAGE_NAME, KEY_PATCH, PREFIX_BUG
-from swesmith.utils import get_image_name
+
+
+def get_repo_to_image_mapping():
+    """
+    Create a cached mapping from repo names (in format repo__name.commit8) to TestSpec image keys.
+    Uses file-based caching for persistence between runs.
+    """
+    cache_file = Path.home() / ".cache" / "1repo1model" / "repo_to_image_mapping.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Try to load from cache first
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                mapping = json.load(f)
+            print(f"Loaded repo-to-image mapping from cache ({len(mapping)} entries)")
+            return mapping
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Failed to load cache file: {e}, rebuilding mapping...")
+    
+    # Load the main SWE-bench dataset to get all instances
+    print("Building repo-to-image mapping from SWE-bench dataset...")
+    dataset = load_swebench_dataset("ZhengyanShi/SWE-bench_Verified_Temporal_9", "train", None)
+
+    mapping = {}
+    for instance in dataset:
+        repo = instance["repo"]
+        base_commit = instance["base_commit"]
+        repo_name = f"{repo.replace('/', '__')}.{base_commit[:8]}"
+
+        # Create TestSpec to get the correct image key
+        test_spec = make_test_spec(instance, namespace="swebench", instance_image_tag="latest")
+        mapping[repo_name] = test_spec.instance_image_key
+
+    # Check if mapping size equals dataset size
+    if len(mapping) != len(dataset):
+        print(f"Warning: Mapping size ({len(mapping)}) does not equal dataset size ({len(dataset)})")
+        print("This indicates duplicate repo_name values (same repo with same 8-char commit prefix)")
+    
+    # Save to cache
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(mapping, f, indent=2)
+        print(f"Saved repo-to-image mapping to cache ({len(mapping)} entries)")
+    except IOError as e:
+        print(f"Failed to save cache file: {e}")
+    
+    return mapping
+
+
+def get_image_name_from_repo(repo_name: str) -> str:
+    """
+    Get the correct image name for a given repo name using TestSpec mapping.
+    """
+    mapping = get_repo_to_image_mapping()
+    return mapping.get(repo_name, f"swebench:{repo_name}")
 
 
 def main(bug_gen_path: str | Path, bug_type: str = "all", num_bugs: int = -1):
@@ -29,10 +86,8 @@ def main(bug_gen_path: str | Path, bug_type: str = "all", num_bugs: int = -1):
             f"Warning: {bug_gen_path} may not point to a bug_gen log directory (should be in {(Path() / LOG_DIR_BUG_GEN).resolve()})."
         )
 
-    repo = bug_gen_path.name
-    commit = repo.rsplit(".", 1)[-1]
-    repo = repo.rsplit(".", 1)[0]
-    image_name = get_image_name(repo, commit)
+    repo_name = bug_gen_path.name
+    image_name = get_image_name_from_repo(repo_name)
 
     patches = []
     prefix = f"{PREFIX_BUG}__"
@@ -43,7 +98,7 @@ def main(bug_gen_path: str | Path, bug_type: str = "all", num_bugs: int = -1):
         for file in files:
             if file.startswith(prefix) and file.endswith(".diff"):
                 bug_type_and_uuid = file.split(f"{PREFIX_BUG}__")[-1].split(".diff")[0]
-                instance_id = f"{repo}.{commit}.{bug_type_and_uuid}"
+                instance_id = f"{repo_name}.{bug_type_and_uuid}"
                 patch = {}
 
                 # Add metadata if it exists

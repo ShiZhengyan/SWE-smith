@@ -6,27 +6,27 @@ Usage: python -m swesmith.bug_gen.llm.rewrite \
     --type <entity_type> \
     repo  # e.g., tkrajina__gpxpy.09fc46b3
 
-Where model follows the litellm format.
+Where model follows the Azure OpenAI format.
 
 Example:
 
-python -m swesmith.bug_gen.llm.rewrite tkrajina__gpxpy.09fc46b3 --model claude-3-7-sonnet-20250219 --type class
+python -m swesmith.bug_gen.llm.rewrite tkrajina__gpxpy.09fc46b3 --model gpt-4o --type class
 """
 
 import ast
 import argparse
 import json
-import litellm
 import logging
 import os
 import random
 import shutil
 import subprocess
 import yaml
+import re
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from litellm import completion
-from litellm.cost_calculator import completion_cost
+from openai import AzureOpenAI
+from azure.identity import DefaultAzureCredential, ChainedTokenCredential, AzureCliCredential, get_bearer_token_provider
 from swesmith.bug_gen.criteria import filter_min_simple_complexity
 from swesmith.bug_gen.llm.utils import (
     PROMPT_KEYS,
@@ -50,8 +50,59 @@ from typing import Any
 
 LM_REWRITE = "lm_rewrite"
 
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-litellm.suppress_debug_info = True
+# Azure OpenAI setup
+scope = "api://trapi/.default"
+credential = get_bearer_token_provider(ChainedTokenCredential(
+    AzureCliCredential(),
+    DefaultAzureCredential(
+        exclude_cli_credential=True,
+        exclude_environment_credential=True,
+        exclude_shared_token_cache_credential=True,
+        exclude_developer_cli_credential=True,
+        exclude_powershell_credential=True,
+        exclude_interactive_browser_credential=True,
+        exclude_visual_studio_code_credentials=True,
+        managed_identity_client_id=os.environ.get("DEFAULT_IDENTITY_CLIENT_ID"),
+    )
+), scope)
+
+
+def get_azure_client(model: str):
+    """Get Azure OpenAI client for the specified model"""
+    if model == "gpt-4o" or model == "4o":
+        model_name = 'gpt-4o'
+        model_version = '2024-05-13'
+        instance = 'gcr/preview'
+        api_version = '2024-10-21'
+    elif model == "o3":
+        model_name = 'o3'
+        model_version = '2025-04-16'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    elif model == "o3-mini":
+        model_name = 'o3-mini'
+        model_version = '2025-01-31'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    elif model == "o4-mini":
+        model_name = 'o4-mini'
+        model_version = '2025-04-16'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    else:
+        raise ValueError(f"Unsupported model: {model}")
+    
+    deployment_name = re.sub(r'[^a-zA-Z0-9-_]', '', f'{model_name}_{model_version}')
+    endpoint = f'https://trapi.research.microsoft.com/{instance}'
+    
+    client = AzureOpenAI(
+        azure_endpoint=endpoint,
+        azure_ad_token_provider=credential,
+        api_version=api_version,
+    )
+    
+    return client, deployment_name
+
 random.seed(24)
 
 
@@ -133,7 +184,14 @@ def main(
             if k in configs
         ]
         messages = [x for x in messages if x["content"]]
-        response: Any = completion(model=model, messages=messages, n=1, temperature=0)
+        
+        client, deployment_name = get_azure_client(model)
+        
+        response = client.chat.completions.create(
+            model=deployment_name,
+            messages=messages,
+            temperature=0,
+        )
         choice = response.choices[0]
         message = choice.message
 
@@ -148,7 +206,8 @@ def main(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        cost = completion_cost(completion_response=response)
+        # Estimate cost (simplified approach since Azure OpenAI doesn't provide direct cost info)
+        cost = 0.01  # Placeholder cost estimation
         rewrite = BugRewrite(
             rewrite=code_block,
             explanation=explanation,
@@ -201,7 +260,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config_file", type=str, help="Path to the configuration file.", required=True
     )
-    parser.add_argument("--model", type=str, help="Model to use for rewriting.")
+    parser.add_argument(
+        "--model", 
+        type=str, 
+        help="Model to use for rewriting (gpt-4o, o3, o3-mini, o4-mini)."
+    )
     parser.add_argument(
         "--type",
         dest="entity_type",

@@ -11,6 +11,7 @@ Usage: python -m swesmith.harness.eval \
 import argparse
 import json
 import os
+from pathlib import Path
 
 from swebench.harness.constants import (
     KEY_INSTANCE_ID,
@@ -21,10 +22,99 @@ from swebench.harness.constants import (
     RUN_EVALUATION_LOG_DIR,
 )
 from swebench.harness.docker_build import close_logger
-from swebench.harness.utils import run_threadpool
+from swebench.harness.utils import run_threadpool, load_swebench_dataset
+from swebench.harness.test_spec.test_spec import make_test_spec
 from swesmith.constants import KEY_PATCH, KEY_TIMED_OUT, TIMEOUT
 from swesmith.harness.grading import get_eval_report
-from swesmith.harness.utils import run_patch_in_container
+from swesmith.harness.utils import run_patch_in_swebench_container
+
+
+# Global variable to cache the mapping
+_repo_to_instance_mapping = None
+
+def get_repo_to_instance_mapping():
+    global _repo_to_instance_mapping
+    
+    # Return cached mapping if already loaded
+    if _repo_to_instance_mapping is not None:
+        return _repo_to_instance_mapping
+    
+    cache_file = Path.home() / ".cache" / "1repo1model" / "repo_to_instance_mapping.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Try to load from cache first
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                _repo_to_instance_mapping = json.load(f)
+            print(f"Loaded repo-to-instance mapping from cache ({len(_repo_to_instance_mapping)} entries)")
+            return _repo_to_instance_mapping
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Failed to load cache file: {e}, rebuilding mapping...")
+    
+    # Load the main SWE-bench dataset to get all instances
+    print("Building repo-to-instance mapping from SWE-bench dataset...")
+    dataset = load_swebench_dataset("ZhengyanShi/SWE-bench_Verified_Temporal_9", "train", None)
+
+    _repo_to_instance_mapping = {}
+    for instance in dataset:
+        repo = instance["repo"]
+        base_commit = instance["base_commit"]
+        repo_name = f"{repo.replace('/', '__')}.{base_commit[:8]}"
+
+        # Store the instance data (which is JSON serializable)
+        _repo_to_instance_mapping[repo_name] = instance
+
+    # Check if mapping size equals dataset size
+    if len(_repo_to_instance_mapping) != len(dataset):
+        print(f"Warning: Mapping size ({len(_repo_to_instance_mapping)}) does not equal dataset size ({len(dataset)})")
+        print("This indicates duplicate repo_name values (same repo with same 8-char commit prefix)")
+    
+    # Save to cache
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(_repo_to_instance_mapping, f, indent=2)
+        print(f"Saved repo-to-instance mapping to cache ({len(_repo_to_instance_mapping)} entries)")
+    except IOError as e:
+        print(f"Failed to save cache file: {e}")
+    
+    return _repo_to_instance_mapping
+
+
+def get_test_spec_from_instance_id(instance_id: str):
+    """
+    Get the TestSpec for a given instance_id by extracting repo and commit information.
+    
+    Args:
+        instance_id (str): Instance ID in format like "astropy__astropy.26d14786.func_pm_ctrl_invert_if__23fz0z13"
+    
+    Returns:
+        TestSpec or None: The TestSpec object if found, None otherwise
+    """
+    # Extract repo name (everything before the last dot and uuid part)
+    # Example: "astropy__astropy.26d14786.func_pm_ctrl_invert_if__23fz0z13" -> "astropy__astropy.26d14786"
+    parts = instance_id.split('.')
+    if len(parts) < 2:
+        print(f"Warning: Invalid instance_id format: {instance_id}")
+        return None
+    
+    # Take the first two parts: repo__name.commit8
+    repo_commit = f"{parts[0]}.{parts[1]}"
+    
+    # Get the cached mapping (will only load once)
+    mapping = get_repo_to_instance_mapping()
+    instance_data = mapping.get(repo_commit, None)
+    if instance_data is None:
+        return None
+    
+    # Create TestSpec from instance data
+    test_spec = make_test_spec(instance_data, namespace="swebench", instance_image_tag="latest")
+
+    # Remove the git apply -v command from eval_script_list
+    if hasattr(test_spec, 'eval_script_list') and test_spec.eval_script_list:
+        test_spec.eval_script_list = [line for line in test_spec.eval_script_list if not line.startswith('git apply -v')]
+
+    return test_spec
 
 
 def run_evaluation(
@@ -38,8 +128,16 @@ def run_evaluation(
     Run per-prediction evaluation
     """
     instance_id = pred[KEY_INSTANCE_ID]
-    logger, timed_out = run_patch_in_container(  # type: ignore
+    
+    # Get TestSpec for this instance using instance_id
+    test_spec = get_test_spec_from_instance_id(instance_id)
+    if test_spec is None:
+        print(f"Warning: Could not find TestSpec for instance {instance_id}")
+        return
+
+    logger, timed_out = run_patch_in_swebench_container(
         instance,
+        test_spec,
         run_id,
         RUN_EVALUATION_LOG_DIR,
         patch=pred[KEY_PREDICTION],

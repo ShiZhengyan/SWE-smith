@@ -37,6 +37,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from ghapi.all import GhApi
 from pathlib import Path
+from swebench.harness.test_spec.test_spec import make_test_spec
+from swebench.harness.utils import load_swebench_dataset
 from swebench.harness.constants import (
     FAIL_TO_PASS,
     PASS_TO_PASS,
@@ -88,6 +90,57 @@ def main(*args, **kwargs):
         print("=" * 80)
         print("=" * 80)
         raise
+
+
+def get_repo_to_image_and_commit_mapping():
+    """
+    Create a cached mapping from repo names (in format repo__name.commit8) to TestSpec image keys and base commits.
+    Uses file-based caching for persistence between runs.
+    """
+    cache_file = Path.home() / ".cache" / "1repo1model" / "repo_to_image_and_commit_mapping.json"
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Try to load from cache first
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                mapping = json.load(f)
+            print(f"Loaded repo-to-image mapping from cache ({len(mapping)} entries)")
+            return mapping
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Failed to load cache file: {e}, rebuilding mapping...")
+    
+    # Load the main SWE-bench dataset to get all instances
+    print("Building repo-to-image mapping from SWE-bench dataset...")
+    dataset = load_swebench_dataset("ZhengyanShi/SWE-bench_Verified_Temporal_9", "train", None)
+
+    mapping = {}
+    for instance in dataset:
+        repo = instance["repo"]
+        base_commit = instance["base_commit"]
+        repo_name = f"{repo.replace('/', '__')}.{base_commit[:8]}"
+
+        # Create TestSpec to get the correct image key
+        test_spec = make_test_spec(instance, namespace="swebench", instance_image_tag="latest")
+        mapping[repo_name] = {
+            "instance_image_key": test_spec.instance_image_key,
+            "base_commit": base_commit
+        }
+
+    # Check if mapping size equals dataset size
+    if len(mapping) != len(dataset):
+        print(f"Warning: Mapping size ({len(mapping)}) does not equal dataset size ({len(dataset)})")
+        print("This indicates duplicate repo_name values (same repo with same 8-char commit prefix)")
+    
+    # Save to cache
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump(mapping, f, indent=2)
+        print(f"Saved repo-to-image mapping to cache ({len(mapping)} entries)")
+    except IOError as e:
+        print(f"Failed to save cache file: {e}")
+    
+    return mapping
 
 
 def skip_print(reason, pbar, stats, verbose):
@@ -152,6 +205,9 @@ def _main(
     if not debug_subprocess:
         SUBPROCESS_ARGS["stdout"] = subprocess.DEVNULL
         SUBPROCESS_ARGS["stderr"] = subprocess.DEVNULL
+
+    # Get the repo to image and commit mapping
+    repo_to_image_and_commit_mapping = get_repo_to_image_and_commit_mapping()
 
     validation_logs_path = Path(validation_logs_path)
     assert validation_logs_path.resolve().is_relative_to(
@@ -221,12 +277,19 @@ def _main(
             )
             continue
 
-        repo = subfolder.rsplit(".", 2)[0].replace("__", "/")
-        commit = get_full_commit(repo, subfolder.rsplit(".", 2)[1])
-        repo_name = repo.split("/")[1]
+        # Extract repo name from subfolder (e.g., 'astropy__astropy.26d14786.func_pm_op_change__jsyynt5w' -> 'astropy__astropy.26d14786')
+        repo_name = '.'.join(subfolder.split('.')[:2])
 
-        # Create repository if it doesn't exist
-        repo_name = get_repo_name(repo, commit)
+        # Get commit and image info from mapping
+        if repo_name not in repo_to_image_and_commit_mapping:
+            stats = skip_print(
+                f"{subfolder}: Repo key {repo_name} not found in mapping", pbar, stats, verbose
+            )
+            continue
+            
+        mapping_info = repo_to_image_and_commit_mapping[repo_name]
+        commit = mapping_info["base_commit"]
+        image_name = mapping_info["instance_image_key"]
 
         task_instance = {
             KEY_INSTANCE_ID: subfolder,
@@ -235,7 +298,7 @@ def _main(
             FAIL_TO_PASS: results[FAIL_TO_PASS],
             PASS_TO_PASS: results[PASS_TO_PASS],
             "created_at": datetime.now().isoformat(),
-            KEY_IMAGE_NAME: get_image_name(repo, commit),
+            KEY_IMAGE_NAME: image_name,
         }
 
         # Clone repository
@@ -291,8 +354,8 @@ def _main(
 
         # Create a branch, check it out, commit, push the branch, and cleanup
         cmds = [
-            f"cd {repo_name}; git config user.email 'swesmith@swesmith.ai'",
-            f"cd {repo_name}; git config user.name 'swesmith'",
+            f"cd {repo_name}; git config user.email 'zhengyanshi@microsoft.com'",
+            f"cd {repo_name}; git config user.name 'ZhengyanShi'",
             f"cd {repo_name}; git config commit.gpgsign false",
             f"cd {repo_name}; git checkout -b {subfolder}",
             f"cd {repo_name}; git add .",

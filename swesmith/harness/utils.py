@@ -8,7 +8,7 @@ from docker.models.containers import Container
 from functools import lru_cache
 from logging import Logger
 from multiprocessing import Lock
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     APPLY_PATCH_PASS,
@@ -23,13 +23,14 @@ from swebench.harness.constants import (
     TESTS_TIMEOUT,
     UTF8,
 )
-from swebench.harness.docker_build import setup_logger
+from swebench.harness.docker_build import setup_logger, build_container, BuildImageError
 from swebench.harness.docker_utils import (
     cleanup_container,
     copy_to_container,
     exec_run_with_timeout,
 )
 from swebench.harness.utils import EvaluationError
+from swebench.harness.test_spec.test_spec import TestSpec
 from swesmith.bug_gen.mirror.generate import INSTANCE_REF
 from swesmith.constants import (
     ENV_NAME,
@@ -43,6 +44,7 @@ from swesmith.constants import (
     TEST_OUTPUT_END,
     TEST_OUTPUT_START,
     TIMEOUT,
+    ORG_NAME,
 )
 from swesmith.utils import (
     clone_repo,
@@ -317,6 +319,173 @@ def run_patch_in_container(
         logger.info(f"Test output for {instance_id} written to {test_output_path}")
         cleanup_container(client, container, logger)
         return logger, timed_out
+    except Exception as e:
+        error_msg = (
+            f"Error validating {instance_id}: {e}\n"
+            f"{traceback.format_exc()}\n"
+            f"Check ({logger.log_file}) for more information."
+        )
+        logger.info(error_msg)
+        print(f"Error validating {instance_id}: {e}")
+
+        # Remove instance container + image, close logger
+        cleanup_container(client, container, logger)
+        return logger, False
+
+
+def run_patch_in_swebench_container(
+    instance: dict,
+    test_spec: TestSpec,
+    run_id: str,
+    log_dir: Path,
+    patch: str | None = None,
+    commit: str | None = None,
+    is_gold: bool = False,
+    timeout: int = TIMEOUT,
+) -> tuple[Logger, bool] | None:
+    """
+    Run a patch in a SWE-bench container using TestSpec. The general logical flow is as follows:
+    1. Setup logging directory
+    2. Build instance image and create container with unique name
+    3. Copy patch to container, if provided
+        a. Apply patch to codebase
+    4. Copy eval script to container (from TestSpec)
+    5. Run eval script, write outputs to logs
+
+    Args:
+        instance (dict): Instance dictionary containing instance details
+        test_spec (TestSpec): SWE-bench TestSpec instance containing test configuration
+        run_id (str): Run identifier
+        log_dir (Path): Directory to store logs
+        patch (str | None): Patch content to apply
+        commit (str | None): Git commit to checkout (if needed)
+        is_gold (bool): Whether this is a gold patch (for reversal)
+        timeout (int): Timeout in seconds for test execution
+
+    Returns:
+        tuple[Logger, bool]: logger and whether the container timed out or None if an error occurred
+    """
+    container = None
+    client = docker.from_env()
+    instance_id = instance[KEY_INSTANCE_ID]
+    
+    try:
+        container_type = None
+        if log_dir == RUN_EVALUATION_LOG_DIR:
+            container_type = "eval"
+        elif log_dir == LOG_DIR_RUN_VALIDATION:
+            container_type = "val"
+
+        # Setup logging directory
+        log_dir = log_dir / run_id / instance_id
+        log_dir.mkdir(parents=True, exist_ok=True)
+        container_name = f"1repo1model.{container_type}.{run_id}.{instance_id}".replace(":", "_").replace("/", "_")
+        log_file = log_dir / LOG_INSTANCE
+        logger = setup_logger(container_name, log_file)
+
+        # Create container with our custom name
+        run_args = test_spec.docker_specs.get("run_args", {})
+        cap_add = run_args.get("cap_add", [])
+        
+        container = client.containers.create(
+            image=test_spec.instance_image_key,
+            name=container_name,
+            user=DOCKER_USER,
+            detach=True,
+            command="tail -f /dev/null",
+            platform=test_spec.platform,
+            cap_add=cap_add,
+        )
+        container.start()
+        logger.info(f"Container for {instance_id} started: {container.id}")
+
+        # If provided, checkout commit in container
+        if commit is not None:
+            repo_name = '.'.join(instance_id.split('.')[:2])
+            logger.info(f"Setting up repository {repo_name} and checking out commit {commit}")
+            
+            # Step 1: Remove existing testbed directory
+            val = container.exec_run(
+                "find /testbed -mindepth 1 -exec rm -rf {} +",
+                user="root",
+                workdir="/"          # 避免 Docker 先 chdir /testbed 导致 EBUSY
+            )
+            if val.exit_code != 0:
+                logger.info(f"Warning: Failed to clean /testbed: {val.output.decode(UTF8)}")
+
+            # 可选——确保旧的 .git 目录被删掉（极少数场景才会残留）
+            val = container.exec_run(
+                "rm -rf /testbed/.git",
+                user="root",
+                workdir="/"
+            )
+            if val.exit_code != 0:
+                logger.info(f"Warning: Failed to remove /testbed/.git: {val.output.decode(UTF8)}")
+
+            # Step 2: Clone the repository
+            val = container.exec_run(
+                f"git clone -o origin https://github.com/{ORG_NAME}/{repo_name}.git /testbed",
+                user=DOCKER_USER
+            )
+            if val.exit_code != 0:
+                logger.info(f"GIT CLONE FAILED: {val.output.decode(UTF8)}")
+                return logger, False
+            
+            # Step 3: Set permissions
+            val = container.exec_run(
+                f"git fetch", workdir=DOCKER_WORKDIR, user=DOCKER_USER
+            )
+            if val.exit_code != 0:
+                logger.info(f"Git fetch failed: {val.output.decode(UTF8)}")
+                return logger, False
+            
+            # Step 4: Checkout specific commit
+            val = container.exec_run(
+                f"git checkout {commit}", workdir=DOCKER_WORKDIR, user=DOCKER_USER
+            )
+            if val.exit_code != 0:
+                logger.info(f"CHECKOUT FAILED: {val.output.decode(UTF8)}")
+                return logger, False·
+            
+            logger.info(f"Successfully set up repository and checked out commit {commit}")
+
+        # If provided, copy patch to container and apply it to codebase
+        if patch is not None:
+            patch_file = Path(log_dir / "patch.diff")
+            patch_file.write_text(patch)
+            logger.info(f"Patch written to {patch_file}, now applying to container...")
+            copy_to_container(container, patch_file, PurePosixPath(DOCKER_PATCH))
+            _apply_patch(instance_id, container, logger, is_gold)
+
+        # Copy eval script to container (use TestSpec's eval_script)
+        eval_file = Path(log_dir / "eval.sh")
+        eval_file.write_text(test_spec.eval_script)
+        logger.info(f"Eval script for {instance_id} written to {eval_file}; copying to container...")
+        copy_to_container(container, eval_file, PurePosixPath("/eval.sh"))
+
+        # Run eval script, write outputs to logs
+        test_output, timed_out, total_runtime = exec_run_with_timeout(
+            container, "/bin/bash /eval.sh", timeout=timeout
+        )
+        test_output_path = log_dir / LOG_TEST_OUTPUT
+        logger.info(f"Test Runtime: {total_runtime:_.2f} seconds")
+        with open(test_output_path, "w") as f:
+            f.write(test_output)
+            if timed_out:
+                timeout_error = f"{TESTS_TIMEOUT}: {timeout} seconds exceeded"
+                f.write(f"\n\n{timeout_error}")
+
+        logger.info(f"Test output for {instance_id} written to {test_output_path}")
+        cleanup_container(client, container, logger)
+        return logger, timed_out
+        
+    except BuildImageError as e:
+        error_msg = f"Error building image for {instance_id}: {e}\n{traceback.format_exc()}"
+        logger.info(error_msg)
+        print(f"Error building image for {instance_id}: {e}")
+        cleanup_container(client, container, logger)
+        return logger, False
+
     except Exception as e:
         error_msg = (
             f"Error validating {instance_id}: {e}\n"

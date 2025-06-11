@@ -64,7 +64,7 @@ def create_repo_commit_mirror(repo: str, commit: str, org: str = ORG_NAME):
             "rm -rf .git; "
             "git init; "
             'git config user.name "ZhengyanShi"; '
-            'git config user.email "zhengyan.shi.19@gmail.com"; '
+            'git config user.email "zhengyanshi@microsoft.com"; '
             "rm -rf .github/workflows; "  # Remove workflows
             "git add .; "
             "git commit -m 'Initial commit'; "

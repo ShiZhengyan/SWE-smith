@@ -22,6 +22,7 @@ from swesmith.constants import (
 from swesmith.harness.log_parsers import MAP_REPO_TO_PARSER, parse_log_pytest
 from swesmith.harness.utils import get_test_command
 from swesmith.utils import get_repo_commit_from_image_name
+from swebench.harness.test_spec.test_spec import TestSpec
 
 
 def read_test_output(filename: str):
@@ -46,7 +47,7 @@ def read_test_output(filename: str):
 def get_valid_report(
     val_pregold_path: str,
     val_postgold_path: str,
-    instance: dict,
+    test_spec: TestSpec,
 ) -> dict[str, list[str]]:
     """
     Get a report of changes in test pass/fail status between pre-gold and post-gold validation logs
@@ -54,12 +55,18 @@ def get_valid_report(
     Args:
         val_pregold_path (str): path to pre-gold validation log
         val_postgold_path (str): path to post-gold validation log
+        test_spec (TestSpec): SWE-bench TestSpec containing test configuration
     Returns:
         report (dict): map of type of status change to list of test cases
     """
-    repo, commit = get_repo_commit_from_image_name(instance[KEY_IMAGE_NAME])
+    # Extract repo from test_spec instance_id (format: repo__name-commit-instance_specific_id)
+    repo = test_spec.instance_id.split("-")[0].replace("__", "/")
     log_parser = MAP_REPO_TO_PARSER.get(repo, parse_log_pytest)
-    is_min_testing = KEY_MIN_TESTING in MAP_REPO_TO_SPECS[repo][commit]
+    
+    # For SWE-bench style validation, we use the TestSpec's eval script which handles minimal testing
+    # So we can assume minimal testing is enabled
+    is_min_testing = True
+    
     val_pregold_output, found_pregold = read_test_output(val_pregold_path)
     val_postgold_output, found_postgold = read_test_output(val_postgold_path)
     pregold_sm = log_parser(val_pregold_output) if found_pregold else {}

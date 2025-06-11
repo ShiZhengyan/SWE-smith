@@ -8,28 +8,28 @@ Usage: python -m swesmith.bug_gen.llm.modify \
     --type <entity_type>
     repo  # e.g., tkrajina__gpxpy.09fc46b3
 
-Where model follows the litellm format.
+Where model follows the Azure OpenAI format.
 
 Example:
 
-python -m swesmith.bug_gen.llm.modify tkrajina__gpxpy.09fc46b3 --config_file configs/bug_gen/class_basic.yml --model claude-3-7-sonnet-20250219 --n_bugs 1
+python -m swesmith.bug_gen.llm.modify tkrajina__gpxpy.09fc46b3 --config_file configs/bug_gen/class_basic.yml --model gpt-4o --n_bugs 1
 """
 
 import argparse
 import shutil
 import jinja2
 import json
-import litellm
 import logging
 import os
 import random
 import yaml
+import re
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from dotenv import load_dotenv
-from litellm import completion
-from litellm.cost_calculator import completion_cost
+from openai import AzureOpenAI
+from azure.identity import DefaultAzureCredential, ChainedTokenCredential, AzureCliCredential, get_bearer_token_provider
 from swesmith.bug_gen.criteria import MAP_KEY_TO_CRITERIA
 from swesmith.bug_gen.llm.utils import PROMPT_KEYS, extract_code_block
 from swesmith.bug_gen.utils import (
@@ -54,8 +54,58 @@ from typing import Any
 
 load_dotenv(dotenv_path=os.getenv("SWEFT_DOTENV_PATH"))
 
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-litellm.suppress_debug_info = True
+# Azure OpenAI setup
+scope = "api://trapi/.default"
+credential = get_bearer_token_provider(ChainedTokenCredential(
+    AzureCliCredential(),
+    DefaultAzureCredential(
+        exclude_cli_credential=True,
+        exclude_environment_credential=True,
+        exclude_shared_token_cache_credential=True,
+        exclude_developer_cli_credential=True,
+        exclude_powershell_credential=True,
+        exclude_interactive_browser_credential=True,
+        exclude_visual_studio_code_credentials=True,
+        managed_identity_client_id=os.environ.get("DEFAULT_IDENTITY_CLIENT_ID"),
+    )
+), scope)
+
+
+def get_azure_client(model: str):
+    """Get Azure OpenAI client for the specified model"""
+    if model == "gpt-4o" or model == "4o":
+        model_name = 'gpt-4o'
+        model_version = '2024-05-13'
+        instance = 'gcr/preview'
+        api_version = '2024-10-21'
+    elif model == "o3":
+        model_name = 'o3'
+        model_version = '2025-04-16'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    elif model == "o3-mini":
+        model_name = 'o3-mini'
+        model_version = '2025-01-31'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    elif model == "o4-mini":
+        model_name = 'o4-mini'
+        model_version = '2025-04-16'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    else:
+        raise ValueError(f"Unsupported model: {model}")
+    
+    deployment_name = re.sub(r'[^a-zA-Z0-9-_]', '', f'{model_name}_{model_version}')
+    endpoint = f'https://trapi.research.microsoft.com/{instance}'
+    
+    client = AzureOpenAI(
+        azure_endpoint=endpoint,
+        azure_ad_token_provider=credential,
+        api_version=api_version,
+    )
+    
+    return client, deployment_name
 
 
 def gen_bug_from_code_lm(
@@ -91,23 +141,38 @@ def gen_bug_from_code_lm(
     ]
     # Remove empty messages
     messages = [x for x in messages if x["content"]]
-    response: Any = completion(model=model, messages=messages, n=n_bugs, temperature=1)
-    for choice in response.choices:
+    
+    client, deployment_name = get_azure_client(model)
+    
+    # Generate multiple completions
+    for _ in range(n_bugs):
+        response = client.chat.completions.create(
+            model=deployment_name,
+            messages=messages,
+            temperature=1,
+        )
+        
+        choice = response.choices[0]
         message = choice.message
         explanation = (
             message.content.split("Explanation:")[-1].strip()
             if "Explanation" in message.content
             else message.content.split("```")[-1].strip()
         )
+        
+        # Estimate cost (simplified approach since Azure OpenAI doesn't provide direct cost info)
+        estimated_cost = 0.01  # Placeholder cost estimation
+        
         bugs.append(
             BugRewrite(
                 rewrite=extract_code_block(message.content),
                 explanation=explanation,
-                cost=completion_cost(completion_response=response) / n_bugs,
+                cost=estimated_cost,
                 output=message.content,
                 strategy="llm",
             )
         )
+    
     return bugs
 
 
@@ -231,8 +296,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        help="Model to use for bug generation",
-        default="openai/gpt-4o",
+        help="Model to use for bug generation (gpt-4o, o3, o3-mini, o4-mini)",
+        default="gpt-4o",
     )
     parser.add_argument(
         "--n_bugs",

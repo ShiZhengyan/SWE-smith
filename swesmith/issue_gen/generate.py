@@ -11,22 +11,23 @@ python swesmith/issue_gen/generate.py \
 import argparse
 import jinja2
 import json
-import litellm
 import logging
 import os
 import random
+import re
 import shutil
 import threading
 import yaml
 
+from azure.identity import DefaultAzureCredential, ChainedTokenCredential, AzureCliCredential, get_bearer_token_provider
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datasets import load_dataset
 from dotenv import load_dotenv
 from io import TextIOWrapper
-from litellm import completion, completion_cost
-from litellm.utils import get_token_count
+from openai import AzureOpenAI
 from pathlib import Path
 from tqdm import tqdm
+from litellm.utils import get_token_count
 from tqdm.contrib.logging import logging_redirect_tqdm
 from swebench.harness.constants import (
     FAIL_TO_PASS,
@@ -42,7 +43,6 @@ from swesmith.constants import (
 from swesmith.issue_gen.utils import get_test_function
 
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
-litellm.suppress_debug_info = True
 
 
 TEST_SRC_CODE_PROMPT = r"""
@@ -67,6 +67,69 @@ def maybe_shorten(text_str: str, max_tokens: int, model: str) -> str:
     return text_str[: max_tokens // 2] + "\n\n(...)\n\n" + text_str[-max_tokens // 2 :]
 
 
+# Azure OpenAI setup
+def setup_azure_client(model: str):
+    scope = "api://trapi/.default"
+    credential = get_bearer_token_provider(ChainedTokenCredential(
+        AzureCliCredential(),
+        DefaultAzureCredential(
+            exclude_cli_credential=True,
+            exclude_environment_credential=True,
+            exclude_shared_token_cache_credential=True,
+            exclude_developer_cli_credential=True,
+            exclude_powershell_credential=True,
+            exclude_interactive_browser_credential=True,
+            exclude_visual_studio_code_credentials=True,
+            managed_identity_client_id=os.environ.get("DEFAULT_IDENTITY_CLIENT_ID"),
+        )
+    ), scope)
+
+    # Extract model type from model string (e.g., "openai/gpt-4o" -> "4o")
+    if "gpt-4o" in model.lower() or "4o" in model.lower():
+        ep = "4o"
+    elif "o3-mini" in model.lower():
+        ep = "o3-mini"
+    elif "o4-mini" in model.lower():
+        ep = "o4-mini"
+    elif "o3" in model.lower():
+        ep = "o3"
+    else:
+        # Default to 4o if model not recognized
+        ep = "4o"
+
+    if ep == "4o":
+        model_name = 'gpt-4o'
+        model_version = '2024-05-13'
+        instance = 'gcr/preview'
+        api_version = '2024-10-21'
+    elif ep == "o3":
+        model_name = 'o3'
+        model_version = '2025-04-16'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    elif ep == "o3-mini":
+        model_name = 'o3-mini'
+        model_version = '2025-01-31'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+    elif ep == "o4-mini":
+        model_name = 'o4-mini'
+        model_version = '2025-04-16'
+        instance = 'msrne/shared'
+        api_version = '2025-04-01-preview'
+
+    deployment_name = re.sub(r'[^a-zA-Z0-9-_]', '', f'{model_name}_{model_version}')
+    endpoint = f'https://trapi.research.microsoft.com/{instance}'
+
+    client = AzureOpenAI(
+        azure_endpoint=endpoint,
+        azure_ad_token_provider=credential,
+        api_version=api_version,
+    )
+    
+    return client, deployment_name
+
+
 class IssueGen:
     def __init__(
         self,
@@ -82,6 +145,10 @@ class IssueGen:
         self.model = model
         self.use_existing = use_existing
         self.n_workers = n_workers
+        
+        # Initialize Azure OpenAI client based on model
+        self.client, self.deployment_name = setup_azure_client(model)
+        
         dataset_path = Path(dataset_path)
         if not dataset_path.suffix == ".json":
             print("Warning: Expected a JSON file")
@@ -152,6 +219,16 @@ class IssueGen:
         ]  # type: ignore[index]
         random.shuffle(problem_statements)
         return problem_statements
+
+    def call_llm(self, messages, tools=None, tool_choice=None, **kwargs):
+        response = self.client.chat.completions.create(
+            model=self.deployment_name,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            **kwargs
+        )
+        return response
 
     def generate_issue(self, instance: dict, idx_inst: int, f: TextIOWrapper) -> dict:
         # Set up logging information
@@ -226,12 +303,17 @@ class IssueGen:
             json.dump(messages, f_, indent=4)
 
         # Generate n_instructions completions containing problem statements
-        response = completion(
-            model=self.model, messages=messages, n=self.n_instructions, temperature=0
+        response = self.call_llm(
+            messages=messages, n=self.n_instructions, temperature=0
         )
         metadata = {
             "responses": {},
-            "cost": completion_cost(response),
+            "cost": response.usage.total_tokens * 0.002 / 1000,  # Calculate cost based on token usage
+            "token_usage": {
+                "completion_tokens": response.usage.completion_tokens,
+                "prompt_tokens": response.usage.prompt_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
         }
 
         # Extract problem statements from completions

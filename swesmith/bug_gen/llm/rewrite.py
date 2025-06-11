@@ -187,11 +187,15 @@ def main(
         
         client, deployment_name = get_azure_client(model)
         
-        response = client.chat.completions.create(
-            model=deployment_name,
-            messages=messages,
-            temperature=0,
-        )
+        # Conditionally include temperature based on model compatibility
+        call_kwargs = {
+            "model": deployment_name,
+            "messages": messages,
+        }
+        if "o3" not in model.lower():
+            call_kwargs["temperature"] = 0
+            
+        response = client.chat.completions.create(**call_kwargs)
         choice = response.choices[0]
         message = choice.message
 

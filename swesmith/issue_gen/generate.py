@@ -140,11 +140,13 @@ class IssueGen:
         use_existing: bool,
         n_workers: int,
         experiment_id: Path,
+        temperature: float = 0.5,
     ):
         self.experiment_id = experiment_id
         self.model = model
         self.use_existing = use_existing
         self.n_workers = n_workers
+        self.temperature = temperature
         
         # Initialize Azure OpenAI client based on model
         self.client, self.deployment_name = setup_azure_client(model)
@@ -221,6 +223,11 @@ class IssueGen:
         return problem_statements
 
     def call_llm(self, messages, tools=None, tool_choice=None, **kwargs):
+        # Some models (like o3) don't support custom temperature values
+        if "o3" in self.model.lower():
+            # Remove temperature from kwargs if it exists, as o3 models only support default (1)
+            kwargs.pop('temperature', None)
+        
         response = self.client.chat.completions.create(
             model=self.deployment_name,
             messages=messages,
@@ -303,9 +310,12 @@ class IssueGen:
             json.dump(messages, f_, indent=4)
 
         # Generate n_instructions completions containing problem statements
-        response = self.call_llm(
-            messages=messages, n=self.n_instructions, temperature=0
-        )
+        # Conditionally include temperature based on model compatibility
+        call_kwargs = {"messages": messages, "n": self.n_instructions}
+        if "o3" not in self.model.lower():
+            call_kwargs["temperature"] = self.temperature
+            
+        response = self.call_llm(**call_kwargs)
         metadata = {
             "responses": {},
             "cost": response.usage.total_tokens * 0.002 / 1000,  # Calculate cost based on token usage
@@ -431,6 +441,12 @@ if __name__ == "__main__":
         type=int,
         help="Number of workers to use for generation.",
         default=1,
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        help="Temperature for LLM generation.",
+        default=0.5,
     )
     args = parser.parse_args()
     if not args.use_existing:

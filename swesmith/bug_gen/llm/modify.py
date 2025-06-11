@@ -146,11 +146,15 @@ def gen_bug_from_code_lm(
     
     # Generate multiple completions
     for _ in range(n_bugs):
-        response = client.chat.completions.create(
-            model=deployment_name,
-            messages=messages,
-            temperature=1,
-        )
+        # Conditionally include temperature based on model compatibility
+        call_kwargs = {
+            "model": deployment_name,
+            "messages": messages,
+        }
+        if "o3" not in model.lower():
+            call_kwargs["temperature"] = 1
+            
+        response = client.chat.completions.create(**call_kwargs)
         
         choice = response.choices[0]
         message = choice.message

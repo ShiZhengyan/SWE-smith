@@ -4,6 +4,7 @@ llm_difficulty_level_rating_results
 .env
 .DS_Store
 .api_key
+.vscode
 
 # Folders
 hidden/

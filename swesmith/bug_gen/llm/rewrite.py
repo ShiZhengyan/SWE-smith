@@ -113,6 +113,31 @@ def get_function_signature(node):
     return f"def {node.name}({args_str})"
 
 
+def get_entity_signature(node):
+    """Generate the entity signature as a string (function, class, etc.)."""
+    if isinstance(node, ast.FunctionDef):
+        args = [ast.unparse(arg) for arg in node.args.args]  # For Python 3.9+
+        args_str = ", ".join(args)
+        return f"def {node.name}({args_str})"
+    elif isinstance(node, ast.ClassDef):
+        # For classes, return the class definition line
+        bases = []
+        if node.bases:
+            bases.extend([ast.unparse(base) for base in node.bases])
+        if node.keywords:
+            bases.extend([f"{kw.arg}={ast.unparse(kw.value)}" for kw in node.keywords])
+        
+        if bases:
+            bases_str = "(" + ", ".join(bases) + ")"
+        else:
+            bases_str = ""
+        
+        return f"class {node.name}{bases_str}"
+    else:
+        # Fallback for other node types
+        return f"{type(node).__name__}: {node.name}"
+
+
 def main(
     repo: str,
     config_file: str,
@@ -169,7 +194,7 @@ def main(
 
         # Get prompt content
         prompt_content = {
-            "func_signature": get_function_signature(candidate.src_node),
+            "func_signature": get_entity_signature(candidate.src_node),
             "func_to_write": blank_function.rewrite,
             "file_src_code": open(candidate.file_path).read(),
         }

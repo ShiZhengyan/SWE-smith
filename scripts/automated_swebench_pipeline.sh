@@ -100,37 +100,39 @@ process_repo_post_generation() {
     
     {
         log "Combining patches (same file) for $repo"
-        python swesmith/bug_gen/combine/same_file.py "$SWESMITH_LOG_DIR/bug_gen/$repo" \
+        python swesmith/bug_gen/combine/same_file.py "$LOG_DIR/bug_gen/$repo" \
+            --include_invalid_patches \
             --num_patches $NUM_PATCHES \
             --limit_per_file $LIMIT_PER_FILE \
             --max_combos $MAX_COMBOS 2>&1 | tee -a "$repo_log"
         
         log "Combining patches (same module) for $repo"
-        python swesmith/bug_gen/combine/same_module.py "$SWESMITH_LOG_DIR/bug_gen/$repo" \
+        python swesmith/bug_gen/combine/same_module.py "$LOG_DIR/bug_gen/$repo" \
+            --include_invalid_patches \
             --num_patches $NUM_PATCHES \
             --limit_per_module $LIMIT_PER_MODULE \
             --max_combos $MAX_COMBOS \
             --depth $DEPTH 2>&1 | tee -a "$repo_log"
         
         log "Collecting patches for $repo"
-        python -m swesmith.bug_gen.collect_patches "$SWESMITH_LOG_DIR/bug_gen/$repo" 2>&1 | tee -a "$repo_log"
+        python -m swesmith.bug_gen.collect_patches "$LOG_DIR/bug_gen/$repo" 2>&1 | tee -a "$repo_log"
         
         log "Validating patches for $repo"
-        python swesmith/harness/valid.py "$SWESMITH_LOG_DIR/bug_gen/${repo}_all_patches.json" \
+        python swesmith/harness/valid.py "$LOG_DIR/bug_gen/${repo}_all_patches.json" \
             --run_id "$run_id" \
             --max_workers $N_WORKERS 2>&1 | tee -a "$repo_log"
         
         log "Gathering task instances for $repo"
-        python -m swesmith.harness.gather "$SWESMITH_LOG_DIR/run_validation/$run_id" 2>&1 | tee -a "$repo_log"
+        python -m swesmith.harness.gather "$LOG_DIR/run_validation/$run_id" 2>&1 | tee -a "$repo_log"
         
         log "Running evaluation for $repo"
         python -m swesmith.harness.eval \
-            --dataset_path "$SWESMITH_LOG_DIR/task_insts/$repo.json" \
+            --dataset_path "$LOG_DIR/task_insts/$repo.json" \
             --predictions_path gold \
             --run_id "$run_id" 2>&1 | tee -a "$repo_log"
         
         log "Generating issues for $repo"
-        python -m swesmith.issue_gen.generate "$SWESMITH_LOG_DIR/task_insts/$repo.json" \
+        python -m swesmith.issue_gen.generate "$LOG_DIR/task_insts/$repo.json" \
             --config_file configs/issue_gen/ig_v2.yaml \
             --model "$MODEL" \
             --n_workers $N_WORKERS \
@@ -140,7 +142,7 @@ process_repo_post_generation() {
         log "Merging problem statements for $repo"
         python swesmith/harness/merge_problem_statements.py \
             --repo "$repo" \
-            --output "$SWESMITH_LOG_DIR/task_insts/${repo}_${MODEL}_bugs${MAX_BUGS}_combos${MAX_COMBOS}_depth${DEPTH}_workers${N_WORKERS}_nbugs${N_BUGS}_patches${NUM_PATCHES}_perfile${LIMIT_PER_FILE}_permodule${LIMIT_PER_MODULE}_ps.json" 2>&1 | tee -a "$repo_log"
+            --output "$LOG_DIR/task_insts/${repo}_ps.json" 2>&1 | tee -a "$repo_log"
         
         log "Completed post-generation processing for $repo"
         

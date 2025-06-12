@@ -40,12 +40,6 @@ REPOS=(
 # Bug generation types
 TYPES=("class" "func" "object")
 
-# Logging setup
-export SWESMITH_LOG_DIR="logs/automated_pipeline_${MODEL}_bugs${MAX_BUGS}_combos${MAX_COMBOS}_depth${DEPTH}_workers${N_WORKERS}_nbugs${N_BUGS}_patches${NUM_PATCHES}_perfile${LIMIT_PER_FILE}_permodule${LIMIT_PER_MODULE}"
-LOG_DIR="$SWESMITH_LOG_DIR"
-mkdir -p "$LOG_DIR"
-MAIN_LOG="$LOG_DIR/pipeline_$(date +%Y%m%d_%H%M%S).log"
-
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$MAIN_LOG"
 }
@@ -156,6 +150,12 @@ main() {
     
     # Process each repository completely before moving to the next
     for repo in "${REPOS[@]}"; do
+        # Logging setup
+        export SWESMITH_LOG_DIR="logs/automated_pipeline_${MODEL}_bugs${MAX_BUGS}_combos${MAX_COMBOS}_depth${DEPTH}_workers${N_WORKERS}_nbugs${N_BUGS}_patches${NUM_PATCHES}_perfile${LIMIT_PER_FILE}_permodule${LIMIT_PER_MODULE}/$repo"
+        LOG_DIR="$SWESMITH_LOG_DIR"
+        mkdir -p "$LOG_DIR"
+        MAIN_LOG="$LOG_DIR/pipeline_$(date +%Y%m%d_%H%M%S).log"
+
         current_repo=$((current_repo + 1))
         log "Repository progress: $current_repo/$total_repos - Processing $repo"
         

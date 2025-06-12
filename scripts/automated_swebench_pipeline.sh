@@ -140,9 +140,6 @@ process_repo_post_generation() {
 
 # Main execution
 main() {
-    log "Starting automated SWE-bench pipeline"
-    log "Processing ${#REPOS[@]} repositories with ${#TYPES[@]} types each"
-    
     local total_repos=${#REPOS[@]}
     local current_repo=0
     

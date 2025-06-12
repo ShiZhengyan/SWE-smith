@@ -5,11 +5,15 @@ set -e
 set -o pipefail
 
 # Configuration
-MAX_BUGS=20
-MAX_COMBOS=100
+MAX_BUGS=100
+MAX_COMBOS=200
 DEPTH=2
-MODEL="gpt-4o"
+MODEL="o3"
 N_WORKERS=32
+N_BUGS=1
+NUM_PATCHES=4
+LIMIT_PER_FILE=2
+LIMIT_PER_MODULE=10
 
 # Repository list
 REPOS=(
@@ -37,7 +41,7 @@ REPOS=(
 TYPES=("class" "func" "object")
 
 # Logging setup
-LOG_DIR="logs/automated_pipeline"
+LOG_DIR="logs/automated_pipeline_${MODEL}_bugs${MAX_BUGS}_combos${MAX_COMBOS}_depth${DEPTH}_workers${N_WORKERS}_nbugs${N_BUGS}_patches${NUM_PATCHES}_perfile${LIMIT_PER_FILE}_permodule${LIMIT_PER_MODULE}"
 mkdir -p "$LOG_DIR"
 MAIN_LOG="$LOG_DIR/pipeline_$(date +%Y%m%d_%H%M%S).log"
 
@@ -45,107 +49,141 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$MAIN_LOG"
 }
 
-process_repo_type() {
+generate_bugs_for_type() {
     local repo=$1
     local type=$2
-    local run_id="${repo}_${type}"
     
-    log "Processing $repo with type $type"
+    log "Processing bug generation for $repo with type $type"
     
-    # Create repo-specific log
-    local repo_log="$LOG_DIR/${repo}_${type}.log"
+    # Create repo-type specific log
+    local repo_log="$LOG_DIR/${repo}_${type}_buggen.log"
     
     {
         log "Starting procedural bug generation for $repo ($type)"
         python swesmith/bug_gen/procedural/generate.py "$repo" \
             --type "$type" \
-            --max_bugs $MAX_BUGS
-        
+            --max_bugs $MAX_BUGS 2>&1 | tee -a "$repo_log"
+        rm -rf $repo
+
         log "Starting LM rewrite for $repo ($type)"
         python -m swesmith.bug_gen.llm.rewrite "$repo" \
             --model "$MODEL" \
             --type "$type" \
             --config_file configs/bug_gen/lm_rewrite.yml \
-            --n_workers $N_WORKERS
-        
+            --n_workers $N_WORKERS 2>&1 | tee -a "$repo_log"
+        rm -rf $repo
+
         log "Starting LM modify for $repo ($type)"
         python -m swesmith.bug_gen.llm.modify "$repo" \
-            --n_bugs 1 \
+            --n_bugs $N_BUGS \
             --model "$MODEL" \
             --type "$type" \
+            --yes \
             --config_file configs/bug_gen/lm_modify.yml \
-            --n_workers $N_WORKERS
+            --n_workers $N_WORKERS 2>&1 | tee -a "$repo_log"
+        rm -rf $repo
+
+        log "Completed bug generation for $repo ($type)"
         
-        log "Combining patches (same file) for $repo ($type)"
+    } 2>&1 | tee -a "$MAIN_LOG"
+}
+
+process_repo_post_generation() {
+    local repo=$1
+    local run_id="${repo}_combined"
+    
+    log "Starting post-generation processing for $repo"
+    
+    # Create repo-specific log
+    local repo_log="$LOG_DIR/${repo}_processing.log"
+    
+    {
+        log "Combining patches (same file) for $repo"
         python swesmith/bug_gen/combine/same_file.py "logs/bug_gen/$repo" \
-            --num_patches 2 \
-            --limit_per_file 20 \
-            --max_combos $MAX_COMBOS
+            --num_patches $NUM_PATCHES \
+            --limit_per_file $LIMIT_PER_FILE \
+            --max_combos $MAX_COMBOS 2>&1 | tee -a "$repo_log"
         
-        log "Combining patches (same module) for $repo ($type)"
+        log "Combining patches (same module) for $repo"
         python swesmith/bug_gen/combine/same_module.py "logs/bug_gen/$repo" \
-            --num_patches 2 \
-            --limit_per_module 20 \
-            --max_combos 200 \
-            --depth $DEPTH
+            --num_patches $NUM_PATCHES \
+            --limit_per_module $LIMIT_PER_MODULE \
+            --max_combos $MAX_COMBOS \
+            --depth $DEPTH 2>&1 | tee -a "$repo_log"
         
-        log "Collecting patches for $repo ($type)"
-        python -m swesmith.bug_gen.collect_patches "logs/bug_gen/$repo"
+        log "Collecting patches for $repo"
+        python -m swesmith.bug_gen.collect_patches "logs/bug_gen/$repo" 2>&1 | tee -a "$repo_log"
         
-        log "Validating patches for $repo ($type)"
+        log "Validating patches for $repo"
         python swesmith/harness/valid.py "logs/bug_gen/${repo}_all_patches.json" \
             --run_id "$run_id" \
-            --max_workers $N_WORKERS
+            --max_workers $N_WORKERS 2>&1 | tee -a "$repo_log"
         
-        log "Gathering task instances for $repo ($type)"
-        python -m swesmith.harness.gather "logs/run_validation/$run_id"
+        log "Gathering task instances for $repo"
+        python -m swesmith.harness.gather "logs/run_validation/$run_id" 2>&1 | tee -a "$repo_log"
         
-        log "Running evaluation for $repo ($type)"
+        log "Running evaluation for $repo"
         python -m swesmith.harness.eval \
             --dataset_path "logs/task_insts/$repo.json" \
             --predictions_path gold \
-            --run_id "$run_id"
+            --run_id "$run_id" 2>&1 | tee -a "$repo_log"
         
-        log "Generating issues for $repo ($type)"
+        log "Generating issues for $repo"
         python -m swesmith.issue_gen.generate "logs/task_insts/$repo.json" \
             --config_file configs/issue_gen/ig_v2.yaml \
             --model "$MODEL" \
-            --n_workers 4 \
+            --n_workers $N_WORKERS \
             --experiment_id "$repo" \
-            --use_existing
+            --use_existing 2>&1 | tee -a "$repo_log"
         
-        log "Merging problem statements for $repo ($type)"
+        log "Merging problem statements for $repo"
         python swesmith/harness/merge_problem_statements.py \
             --repo "$repo" \
-            --output "logs/task_insts/${repo}_${MODEL}_ps.json"
+            --output "logs/task_insts/${repo}_${MODEL}_bugs${MAX_BUGS}_combos${MAX_COMBOS}_depth${DEPTH}_workers${N_WORKERS}_nbugs${N_BUGS}_patches${NUM_PATCHES}_perfile${LIMIT_PER_FILE}_permodule${LIMIT_PER_MODULE}_ps.json" 2>&1 | tee -a "$repo_log"
         
-        log "Completed processing $repo ($type)"
+        log "Completed post-generation processing for $repo"
         
-    } 2>&1 | tee "$repo_log"
+    } 2>&1 | tee -a "$MAIN_LOG"
 }
 
 # Main execution
 main() {
     log "Starting automated SWE-bench pipeline"
     log "Processing ${#REPOS[@]} repositories with ${#TYPES[@]} types each"
-    log "Total combinations: $((${#REPOS[@]} * ${#TYPES[@]}))"
     
-    local total_combinations=$((${#REPOS[@]} * ${#TYPES[@]}))
-    local current_combination=0
+    local total_repos=${#REPOS[@]}
+    local current_repo=0
     
+    # Process each repository completely before moving to the next
     for repo in "${REPOS[@]}"; do
+        current_repo=$((current_repo + 1))
+        log "Repository progress: $current_repo/$total_repos - Processing $repo"
+        
+        # Phase 1: Bug generation for all types in this repo
+        log "Phase 1: Bug generation for $repo"
+        local type_count=0
         for type in "${TYPES[@]}"; do
-            current_combination=$((current_combination + 1))
-            log "Progress: $current_combination/$total_combinations - Processing $repo with type $type"
+            type_count=$((type_count + 1))
+            log "Bug generation progress for $repo: $type_count/${#TYPES[@]} - Processing type $type"
             
-            if process_repo_type "$repo" "$type"; then
-                log "Successfully completed $repo ($type)"
+            if generate_bugs_for_type "$repo" "$type"; then
+                log "Successfully completed bug generation for $repo ($type)"
             else
-                log "ERROR: Failed to process $repo ($type)"
-                # Continue with next combination instead of exiting
+                log "ERROR: Failed bug generation for $repo ($type)"
                 continue
             fi
         done
+        
+        # Phase 2: Post-generation processing for this repo
+        log "Phase 2: Post-generation processing for $repo"
+        if process_repo_post_generation "$repo"; then
+            log "Successfully completed processing for $repo"
+        else
+            log "ERROR: Failed processing for $repo"
+            continue
+        fi
+        
+        log "Completed all processing for $repo"
     done
     
     log "Automated pipeline completed!"

@@ -105,6 +105,7 @@ process_repo_post_generation() {
             --num_patches $NUM_PATCHES \
             --limit_per_file $LIMIT_PER_FILE \
             --max_combos $MAX_COMBOS 2>&1 | tee -a "$repo_log"
+        rm -rf $repo
         
         log "Combining patches (same module) for $repo"
         python swesmith/bug_gen/combine/same_module.py "$LOG_DIR/bug_gen/$repo" \
@@ -113,7 +114,8 @@ process_repo_post_generation() {
             --limit_per_module $LIMIT_PER_MODULE \
             --max_combos $MAX_COMBOS \
             --depth $DEPTH 2>&1 | tee -a "$repo_log"
-        
+        rm -rf $repo
+
         log "Collecting patches for $repo"
         python -m swesmith.bug_gen.collect_patches "$LOG_DIR/bug_gen/$repo" 2>&1 | tee -a "$repo_log"
         
@@ -121,15 +123,10 @@ process_repo_post_generation() {
         python swesmith/harness/valid.py "$LOG_DIR/bug_gen/${repo}_all_patches.json" \
             --run_id "$run_id" \
             --max_workers $N_WORKERS 2>&1 | tee -a "$repo_log"
-        
+        rm -rf $repo
+
         log "Gathering task instances for $repo"
         python -m swesmith.harness.gather "$LOG_DIR/run_validation/$run_id" 2>&1 | tee -a "$repo_log"
-        
-        log "Running evaluation for $repo"
-        python -m swesmith.harness.eval \
-            --dataset_path "$LOG_DIR/task_insts/$repo.json" \
-            --predictions_path gold \
-            --run_id "$run_id" 2>&1 | tee -a "$repo_log"
         
         log "Generating issues for $repo"
         python -m swesmith.issue_gen.generate "$LOG_DIR/task_insts/$repo.json" \

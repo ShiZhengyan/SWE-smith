@@ -15,6 +15,8 @@ NUM_PATCHES=4
 LIMIT_PER_FILE=2
 LIMIT_PER_MODULE=10
 
+
+
 # Repository list
 REPOS=(
     "astropy__astropy.26d14786"
@@ -39,10 +41,6 @@ REPOS=(
 
 # Bug generation types
 TYPES=("class" "func" "object")
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$MAIN_LOG"
-}
 
 generate_bugs_for_type() {
     local repo=$1
@@ -155,6 +153,10 @@ main() {
         LOG_DIR="$SWESMITH_LOG_DIR"
         mkdir -p "$LOG_DIR"
         MAIN_LOG="$LOG_DIR/pipeline_$(date +%Y%m%d_%H%M%S).log"
+
+        log() {
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$MAIN_LOG"
+        }
 
         current_repo=$((current_repo + 1))
         log "Repository progress: $current_repo/$total_repos - Processing $repo"

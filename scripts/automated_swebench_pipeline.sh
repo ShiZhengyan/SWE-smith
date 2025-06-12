@@ -91,7 +91,7 @@ generate_bugs_for_type() {
 
 process_repo_post_generation() {
     local repo=$1
-    local run_id="${repo}_combined"
+    local run_id="${repo}"
     
     log "Starting post-generation processing for $repo"
     
@@ -118,7 +118,7 @@ process_repo_post_generation() {
 
         log "Collecting patches for $repo"
         python -m swesmith.bug_gen.collect_patches "$LOG_DIR/bug_gen/$repo" 2>&1 | tee -a "$repo_log"
-        
+
         log "Validating patches for $repo"
         python swesmith/harness/valid.py "$LOG_DIR/bug_gen/${repo}_all_patches.json" \
             --run_id "$run_id" \
@@ -129,7 +129,7 @@ process_repo_post_generation() {
         python -m swesmith.harness.gather "$LOG_DIR/run_validation/$run_id" 2>&1 | tee -a "$repo_log"
         
         log "Generating issues for $repo"
-        python -m swesmith.issue_gen.generate "$LOG_DIR/task_insts/$repo.json" \
+        python -m swesmith.issue_gen.generate "$LOG_DIR/task_insts/$run_id.json" \
             --config_file configs/issue_gen/ig_v2.yaml \
             --model "$MODEL" \
             --n_workers $N_WORKERS \
@@ -138,7 +138,7 @@ process_repo_post_generation() {
         
         log "Merging problem statements for $repo"
         python swesmith/harness/merge_problem_statements.py \
-            --repo "$repo" \
+            --repo "${repo}" \
             --output "$LOG_DIR/task_insts/${repo}_ps.json" 2>&1 | tee -a "$repo_log"
         
         log "Completed post-generation processing for $repo"

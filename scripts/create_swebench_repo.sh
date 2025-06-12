@@ -26,13 +26,13 @@ types=("class", "func", "object")
 
 # Try to generate bugs
 python swesmith/bug_gen/procedural/generate.py $repo \
-   --type func \
+   --type class \
    --max_bugs $max_bugs
 
 # LM Rewrite
 python -m swesmith.bug_gen.llm.rewrite $repo \
    --model $model \
-   --type func \
+   --type object \
    --config_file configs/bug_gen/lm_rewrite.yml \
    --n_workers $n_workers
 
@@ -40,7 +40,7 @@ python -m swesmith.bug_gen.llm.rewrite $repo \
 python -m swesmith.bug_gen.llm.modify $repo \
    --n_bugs 1 \
    --model gpt-4o \
-   --type func \
+   --type object \
    --config_file configs/bug_gen/lm_modify.yml \
    --n_workers $n_workers
 

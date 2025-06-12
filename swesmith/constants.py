@@ -3,6 +3,7 @@ Purpose: Repo-wide constants
 """
 
 from pathlib import Path
+import os
 
 CONDA_VERSION = "py312_24.1.2-0"
 DEFAULT_PM_LIKELIHOOD = 0.2
@@ -20,11 +21,21 @@ KEY_MIN_PREGOLD = "minimal_pregold"
 KEY_PATCH = "patch"
 KEY_TEST_CMD = "test_cmd"
 KEY_TIMED_OUT = "timed_out"
-LOG_DIR_BUG_GEN = Path("logs/bug_gen")
-LOG_DIR_ENV_RECORDS = Path("logs/build_images/records")
-LOG_DIR_ISSUE_GEN = Path("logs/issue_gen")
-LOG_DIR_RUN_VALIDATION = Path("logs/run_validation")
-LOG_DIR_TASKS = Path("logs/task_insts")
+
+LOG_DIR_BASE = Path(os.getenv("SWESMITH_LOG_DIR", "logs"))
+
+LOG_DIR_BUG_GEN = LOG_DIR_BASE / "bug_gen"
+LOG_DIR_ENV_RECORDS = LOG_DIR_BASE / "build_images/records"
+LOG_DIR_ISSUE_GEN = LOG_DIR_BASE / "issue_gen"
+LOG_DIR_RUN_VALIDATION = LOG_DIR_BASE / "run_validation"
+LOG_DIR_TASKS = LOG_DIR_BASE / "task_insts"
+
+# LOG_DIR_BUG_GEN = Path("logs/bug_gen")
+# LOG_DIR_ENV_RECORDS = Path("logs/build_images/records")
+# LOG_DIR_ISSUE_GEN = Path("logs/issue_gen")
+# LOG_DIR_RUN_VALIDATION = Path("logs/run_validation")
+# LOG_DIR_TASKS = Path("logs/task_insts")
+
 LOG_TEST_OUTPUT_PRE_GOLD = "test_output_pre_gold.txt"
 MAX_INPUT_TOKENS = 128000
 ORG_NAME = "OneRepoOneModel"

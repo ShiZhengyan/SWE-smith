@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 from itertools import combinations
 from swesmith.constants import TEMP_PATCH
 from swesmith.utils import generate_hash
+import tempfile
+
 
 load_dotenv()
 
@@ -236,32 +238,53 @@ def get_entity_from_node(
 
 def get_patch(repo: str, reset_changes: bool = False):
     """Get the patch for the current changes in a Git repository."""
+
     if (
         not os.path.isdir(repo)
         or subprocess.run(["git", "-C", repo, "status"], **DEVNULL).returncode != 0
     ):
         raise FileNotFoundError(f"'{repo}' is not a valid Git repository.")
 
+    # Stage every change in the working tree so the diff only contains staged files
     subprocess.run(["git", "-C", repo, "add", "-A"], check=True, **DEVNULL)
+
+    # Capture the staged diff as a patch string
     patch = subprocess.run(
         ["git", "-C", repo, "diff", "--staged"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
+
     if len(patch.strip()) == 0:
+        # No changes were staged, so no patch is needed
         return None
+
+    # Clean up the index and the working tree to avoid unwanted side‑effects
     for cleanup_cmd in [
         f"git -C {repo} restore --staged .",
         f"git -C {repo} reset --hard",
         f"git -C {repo} clean -fdx",
     ]:
         subprocess.run(cleanup_cmd.split(), check=True, **DEVNULL)
-    patch_file = os.path.join(repo, TEMP_PATCH)
-    with open(patch_file, "w") as f:
+
+    # -------------------------------------------------------------
+    # Apply the requested patch changes (diff from the staged state)
+    # -------------------------------------------------------------
+
+    # Write the patch outside the working tree so it never appears in `git add -A`
+    patch_file = tempfile.NamedTemporaryFile(suffix=".diff", delete=False).name
+
+    # Use explicit UTF‑8 encoding to avoid platform‑specific issues
+    with open(patch_file, "w", encoding="utf-8") as f:
         f.write(patch)
-    subprocess.run(["git", "-C", repo, "apply", TEMP_PATCH], check=True)
+
+    # Apply the diff back onto the working tree from the temporary file
+    subprocess.run(["git", "-C", repo, "apply", patch_file], check=True)
+
+    # Optionally reset the changes so the repository returns to a clean state
     if reset_changes:
         subprocess.run(["git", "-C", repo, "reset", "--hard"], check=True, **DEVNULL)
         subprocess.run(["git", "-C", repo, "clean", "-fdx"], check=True, **DEVNULL)
+
     return patch

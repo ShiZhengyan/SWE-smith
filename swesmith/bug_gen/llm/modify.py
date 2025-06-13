@@ -46,6 +46,7 @@ from swesmith.constants import (
     PREFIX_BUG,
     PREFIX_METADATA,
 )
+from swesmith.bug_gen.llm.rewrite import make_worktree, remove_worktree
 from swesmith.utils import clone_repo, does_repo_exist
 from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -222,47 +223,60 @@ def main(
     print(f"Logging bugs to {log_dir}")
 
     def _process_candidate(candidate: CodeEntity):
-        # Run bug generation
-        bugs = gen_bug_from_code_lm(candidate, configs, n_bugs, model)
-        cost, n_bugs_generated, n_generation_failed = sum([x.cost for x in bugs]), 0, 0
+        # 1. Isolate this thread inside its own work-tree
+        wt = make_worktree(repo)
+        try:
+            # Remember original path for logging
+            orig_file_path = candidate.file_path
 
-        for bug in bugs:
-            # Create artifacts
-            bug_dir = (
-                log_dir
-                / candidate.file_path.replace("/", "__")
-                / candidate.src_node.name
+            # Point the candidate at the work-tree copy
+            candidate.file_path = os.path.join(
+                wt, os.path.relpath(candidate.file_path, repo)
             )
-            bug_dir.mkdir(parents=True, exist_ok=True)
-            uuid_str = f"{configs['name']}__{bug.get_hash()}"
-            metadata_path = f"{PREFIX_METADATA}__{uuid_str}.json"
-            bug_path = f"{PREFIX_BUG}__{uuid_str}.diff"
 
-            try:
-                with open(bug_dir / metadata_path, "w") as f:
-                    json.dump(bug.to_dict(), f, indent=2)
-                apply_code_change(candidate, bug)
-                patch = get_patch(repo, reset_changes=True)
-                if not patch:
-                    raise ValueError("Patch is empty.")
-                with open(bug_dir / bug_path, "w") as f:
-                    f.write(patch)
-            except Exception as e:
-                print(
-                    f"Error applying bug to {candidate.src_node.name} in {candidate.file_path}: {e}",
+            # -------------------- unchanged logic ---------------------
+            bugs = gen_bug_from_code_lm(candidate, configs, n_bugs, model)
+            cost, n_bugs_generated, n_generation_failed = sum(b.cost for b in bugs), 0, 0
+
+            for bug in bugs:
+                bug_dir = (
+                    log_dir / orig_file_path.replace("/", "__") / candidate.src_node.name
                 )
-                # import traceback
-                # print(f"Traceback:\n{''.join(traceback.format_exc())}")
-                (bug_dir / metadata_path).unlink(missing_ok=True)
-                n_generation_failed += 1
-                continue
-            else:
-                n_bugs_generated += 1
-        return {
-            "cost": cost,
-            "n_bugs_generated": n_bugs_generated,
-            "n_generation_failed": n_generation_failed,
-        }
+                bug_dir.mkdir(parents=True, exist_ok=True)
+                uuid_str = f"{configs['name']}__{bug.get_hash()}"
+                metadata_path = bug_dir / f"{PREFIX_METADATA}__{uuid_str}.json"
+                bug_path      = bug_dir / f"{PREFIX_BUG}__{uuid_str}.diff"
+
+                try:
+                    with open(metadata_path, "w") as f:
+                        json.dump(bug.to_dict(), f, indent=2)
+
+                    apply_code_change(candidate, bug)          # acts in *wt*
+                    patch = get_patch(wt, reset_changes=True)  # --------^
+                    if not patch:
+                        raise ValueError("Patch is empty.")
+
+                    with open(bug_path, "w") as f:
+                        f.write(patch)
+                except Exception as e:
+                    print(
+                        f"Error applying bug to {candidate.src_node.name} "
+                        f"in {candidate.file_path}: {e}"
+                    )
+                    metadata_path.unlink(missing_ok=True)
+                    n_generation_failed += 1
+                else:
+                    n_bugs_generated += 1
+
+            return {
+                "cost": cost,
+                "n_bugs_generated": n_bugs_generated,
+                "n_generation_failed": n_generation_failed,
+            }
+        # 2. Always clean up this thread’s work-tree
+        finally:
+            remove_worktree(repo, wt)
+
 
     stats = {"cost": 0.0, "n_bugs_generated": 0, "n_generation_failed": 0}
     with ThreadPoolExecutor(max_workers=n_workers) as executor:

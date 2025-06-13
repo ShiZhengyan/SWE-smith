@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import yaml
 import re
+import tempfile, shutil, subprocess, pathlib, threading
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AzureOpenAI
@@ -106,6 +107,28 @@ def get_azure_client(model: str):
 random.seed(24)
 
 
+def make_worktree(base_repo: str) -> str:
+    """
+    Create a temporary work-tree that points at HEAD of the main repo.
+    Returns the path to the new working directory.
+    """
+    tmpdir = tempfile.mkdtemp(prefix=pathlib.Path(base_repo).name + "_wt_")
+    # --detach keeps it independent from branch heads
+    subprocess.run(
+        ["git", "-C", base_repo, "worktree", "add", "--detach", tmpdir, "HEAD"],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return tmpdir
+
+
+def remove_worktree(base_repo: str, wt_path: str):
+    subprocess.run(
+        ["git", "-C", base_repo, "worktree", "remove", "-f", wt_path],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    shutil.rmtree(wt_path, ignore_errors=True)    
+
+
 def get_function_signature(node):
     """Generate the function signature as a string."""
     args = [ast.unparse(arg) for arg in node.args.args]  # For Python 3.9+
@@ -169,97 +192,104 @@ def main(
         print("Skipping existing bugs.")
 
     def _process_candidate(candidate: CodeEntity) -> dict[str, Any]:
-        bug_dir = (
-            log_dir / candidate.file_path.replace("/", "__") / candidate.src_node.name
-        )
-        if not redo_existing:
-            if bug_dir.exists() and any(
-                [
+        # 1.  Make an isolated work-tree for this thread
+        wt = make_worktree(repo)               # <-- new
+        try:
+            # candidate.file_path originally points at the main repo.
+            # Redirect it so `apply_code_change()` edits the work-tree copy.
+            orig_file_path = candidate.file_path
+            candidate.file_path = os.path.join(
+                wt, os.path.relpath(candidate.file_path, repo)
+            )
+
+            # 2.  All logic below is unchanged except:
+            #     * use *wt* wherever we used *repo* for Git commands
+            #     * bug_dir still derived from the ORIGINAL path so the
+            #       log structure on disk stays identical.
+            bug_dir = (
+                log_dir / orig_file_path.replace("/", "__") / candidate.src_node.name
+            )
+            if not redo_existing:
+                if bug_dir.exists() and any(
                     str(x).startswith(f"{PREFIX_BUG}__{configs['name']}")
                     for x in os.listdir(bug_dir)
-                ]
-            ):
-                return {"n_bugs_generated": 0, "cost": 0.0}
+                ):
+                    return {"n_bugs_generated": 0, "cost": 0.0}
 
-        try:
-            # Blank out the function body
-            blank_function = BugRewrite(
-                rewrite=strip_function_body(candidate.src_code),
-                explanation="Blanked out the function body.",
-                strategy=LM_REWRITE,
-            )
-            apply_code_change(candidate, blank_function)
-        except Exception:
-            return {"n_generation_failed": 1, "cost": 0.0}
+            # -------- blank out the entity ---------------------------------
+            try:
+                blank_function = BugRewrite(
+                    rewrite=strip_function_body(candidate.src_code),
+                    explanation="Blanked out the function body.",
+                    strategy=LM_REWRITE,
+                )
+                apply_code_change(candidate, blank_function)
+            except Exception:
+                return {"n_generation_failed": 1, "cost": 0.0}
 
-        # Get prompt content
-        prompt_content = {
-            "func_signature": get_entity_signature(candidate.src_node),
-            "func_to_write": blank_function.rewrite,
-            "file_src_code": open(candidate.file_path).read(),
-        }
-
-        # Generate a rewrite
-        messages = [
-            {
-                "content": configs[k].format(**prompt_content),
-                "role": "user" if k != "system" else "system",
+            # -------- prepare the prompt -----------------------------------
+            prompt_content = {
+                "func_signature": get_entity_signature(candidate.src_node),
+                "func_to_write": blank_function.rewrite,
+                "file_src_code": open(candidate.file_path).read(),
             }
-            for k in PROMPT_KEYS
-            if k in configs
-        ]
-        messages = [x for x in messages if x["content"]]
-        
-        client, deployment_name = get_azure_client(model)
-        
-        # Conditionally include temperature based on model compatibility
-        call_kwargs = {
-            "model": deployment_name,
-            "messages": messages,
-        }
-        if "o3" not in model.lower():
-            call_kwargs["temperature"] = 0
-            
-        response = client.chat.completions.create(**call_kwargs)
-        choice = response.choices[0]
-        message = choice.message
+            messages = [
+                {
+                    "content": configs[k].format(**prompt_content),
+                    "role": "user" if k != "system" else "system",
+                }
+                for k in PROMPT_KEYS
+                if k in configs
+            ]
+            messages = [x for x in messages if x["content"]]
 
-        # Revert the blank-out change to the current file and apply the rewrite
-        code_block = extract_code_block(message.content)
-        explanation = message.content.split("```", 1)[0].strip()
+            client, deployment_name = get_azure_client(model)
+            call_kwargs = {"model": deployment_name, "messages": messages}
+            if "o3" not in model.lower():
+                call_kwargs["temperature"] = 0
+            response = client.chat.completions.create(**call_kwargs)
+            message = response.choices[0].message
 
-        subprocess.run(
-            f"cd {repo}; git reset --hard",
-            shell=True,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # Estimate cost (simplified approach since Azure OpenAI doesn't provide direct cost info)
-        cost = 0.01  # Placeholder cost estimation
-        rewrite = BugRewrite(
-            rewrite=code_block,
-            explanation=explanation,
-            strategy=LM_REWRITE,
-            cost=cost,
-            output=message.content,
-        )
-        apply_code_change(candidate, rewrite)
-        patch = get_patch(repo, reset_changes=True)
+            # -------- apply the model rewrite ------------------------------
+            code_block   = extract_code_block(message.content)
+            explanation  = message.content.split("```", 1)[0].strip()
 
-        # Log the bug
-        bug_dir.mkdir(parents=True, exist_ok=True)
-        uuid_str = f"{configs['name']}__{rewrite.get_hash()}"
-        metadata_path = f"{PREFIX_METADATA}__{uuid_str}.json"
-        bug_path = f"{PREFIX_BUG}__{uuid_str}.diff"
+            subprocess.run(
+                ["git", "-C", wt, "reset", "--hard"],      # <-- use *wt*
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-        with open(bug_dir / metadata_path, "w") as f:
-            json.dump(rewrite.to_dict(), f, indent=2)
-        with open(bug_dir / bug_path, "w") as f:
-            f.write(patch)
-        print(f"Wrote bug to {bug_dir / bug_path}")
+            rewrite = BugRewrite(
+                rewrite=code_block,
+                explanation=explanation,
+                strategy=LM_REWRITE,
+                cost=0.01,          # placeholder
+                output=message.content,
+            )
+            apply_code_change(candidate, rewrite)
 
-        return {"n_bugs_generated": 1, "cost": cost}
+            # -------- create & log the patch -------------------------------
+            patch = get_patch(wt, reset_changes=True)      # <-- use *wt*
+
+            bug_dir.mkdir(parents=True, exist_ok=True)
+            uuid_str      = f"{configs['name']}__{rewrite.get_hash()}"
+            metadata_path = bug_dir / f"{PREFIX_METADATA}__{uuid_str}.json"
+            bug_path      = bug_dir / f"{PREFIX_BUG}__{uuid_str}.diff"
+
+            with open(metadata_path, "w") as f:
+                json.dump(rewrite.to_dict(), f, indent=2)
+            with open(bug_path, "w") as f:
+                f.write(patch)
+            print(f"Wrote bug to {bug_path}")
+
+            return {"n_bugs_generated": 1, "cost": 0.01}
+
+        # 3.  Always remove the temporary work-tree, even on exceptions
+        finally:
+            remove_worktree(repo, wt)
+
 
     stats = {"cost": 0.0, "n_bugs_generated": 0, "n_generation_failed": 0}
     with ThreadPoolExecutor(max_workers=n_workers) as executor:

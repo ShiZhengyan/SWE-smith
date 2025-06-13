@@ -170,15 +170,15 @@ def check_if_branch_exists(
                 print(f"[{subfolder}] Overriding existing branch")
             branch_exists = False
         else:
-            branch_commit = (
-                subprocess.run(
-                    f"cd {repo_name}; git rev-parse HEAD",
-                    capture_output=True,
-                    **SUBPROCESS_ARGS,
-                )
-                .stdout.decode()
-                .strip()
+            result = subprocess.run(
+                f"cd {repo_name}; git rev-parse HEAD",
+                shell=True,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,          # return str instead of bytes (py ≥3.7)
             )
+            branch_commit = result.stdout.strip()
             branch_exists = True
         subprocess.run(f"cd {repo_name}; git checkout {main_branch}", **SUBPROCESS_ARGS)
         subprocess.run(f"cd {repo_name}; git branch -D {subfolder}", **SUBPROCESS_ARGS)
@@ -210,9 +210,9 @@ def _main(
     repo_to_image_and_commit_mapping = get_repo_to_image_and_commit_mapping()
 
     validation_logs_path = Path(validation_logs_path)
-    assert validation_logs_path.resolve().is_relative_to(
-        Path("logs/run_validation").resolve()
-    ), "Validation logs should be in logs/run_validation"
+    # assert validation_logs_path.resolve().is_relative_to(
+    #     Path("logs/run_validation").resolve()
+    # ), "Validation logs should be in logs/run_validation"
     assert validation_logs_path.exists(), (
         f"Validation logs path {validation_logs_path} does not exist"
     )

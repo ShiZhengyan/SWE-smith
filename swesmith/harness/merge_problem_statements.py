@@ -6,7 +6,7 @@ import os
 import argparse
 from pathlib import Path
 from tqdm import tqdm
-
+from swesmith.constants import LOG_DIR_BASE
 
 def load_json(filepath):
     """Load JSON data from a file."""
@@ -35,8 +35,8 @@ def merge_problem_statements(repo, output_path):
     """Merge task instances with their corresponding problem statements."""
     
     # Define paths
-    task_insts_path = f"logs/task_insts/{repo}.json"
-    issue_gen_base_path = f"logs/issue_gen/{repo}/{repo}"
+    task_insts_path = f"{LOG_DIR_BASE}/task_insts/{repo}.json"
+    issue_gen_base_path = f"{LOG_DIR_BASE}/issue_gen/{repo}/{repo}"
     
     # Load task instances
     task_instances = load_json(task_insts_path)

@@ -119,6 +119,36 @@ def get_test_spec_from_instance_id(instance_id: str):
     
     # Create TestSpec from instance data
     test_spec = make_test_spec(instance_data, namespace="swebench", instance_image_tag="latest")
+    if "astropy__astropy.26d14786" in instance_id:
+        new_pytest_line = "pytest -rA -vv -o console_output_style=classic --tb=no"
+        original_line = "pytest -rA -vv -o console_output_style=classic --tb=no astropy/utils/tests/test_misc.py"
+
+        # Find and replace the line in env_script_list
+        if hasattr(test_spec, 'eval_script_list') and test_spec.eval_script_list:
+            for i, line in enumerate(test_spec.eval_script_list):
+                if line == original_line:
+                    test_spec.eval_script_list[i] = new_pytest_line
+                    print(f"Successfully replaced pytest line for {instance_id}")
+                    break
+    elif "pylint-dev__pylint.1f8c4d9e" in instance_id:
+        new_pytest_lines = [
+            "pip install -r requirements_test.txt",
+            "pytest -rA -vv -o console_output_style=classic --tb=no"
+        ]
+        original_line = "pytest -rA tests/config/test_config.py"
+        
+        # Find and replace the line in eval_script_list
+        if hasattr(test_spec, 'eval_script_list') and test_spec.eval_script_list:
+            for i, line in enumerate(test_spec.eval_script_list):
+                if line == original_line:
+                    # Replace one line with two lines (not nested)
+                    test_spec.eval_script_list[i:i+1] = new_pytest_lines
+                    print(f"Successfully replaced pytest line for {instance_id}")
+                    break
+    else:
+        raise NotImplementedError(
+            f"TestSpec for {instance_id} not implemented. Please add it to the code."
+        )
 
     # Remove the git apply -v command from eval_script_list
     if hasattr(test_spec, 'eval_script_list') and test_spec.eval_script_list:

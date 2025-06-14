@@ -164,8 +164,8 @@ def main(
         map_path_to_patches[k] = [
             x
             for x in convert_nested_dict_to_list(map_path_to_patches[k])
-            if not include_invalid_patches
-            and x.split(f"{PREFIX_BUG}__")[-1].split(".diff")[0] in validated_inst_ids
+            if include_invalid_patches
+            or x.split(f"{PREFIX_BUG}__")[-1].split(".diff")[0] in validated_inst_ids
         ]
         if k.endswith(".py") or len(map_path_to_patches[k]) == 0:
             del map_path_to_patches[k]

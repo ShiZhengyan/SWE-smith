@@ -101,10 +101,30 @@ class TaskDifficultyEvaluator:
             model_version = '2025-04-16'
             instance = 'msrne/shared'
             api_version = '2025-04-01-preview'
+        elif self.model_type == "gpt-4.1":
+            model_name = 'gpt-4.1'  # Ensure this is a valid model name
+            model_version = '2025-04-14'  # Ensure this is a valid model version
+            instance = 'gcr/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
+            api_version = '2025-04-01-preview'
+        elif self.model_type == "gpt-4.5-preview":
+            model_name = 'gpt-4.5-preview'  # Ensure this is a valid model name
+            model_version = '2025-02-27'  # Ensure this is a valid model version
+            instance = 'msrne/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
+            api_version = '2025-04-01-preview'
+        elif self.model_type == "o1":
+            model_name = 'o1'  # Ensure this is a valid model name
+            model_version = '2024-12-17'  # Ensure this is a valid model version
+            instance = 'msrne/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
+            api_version = '2025-04-01-preview'
+        elif self.model_type == "gpt-4.1-mini":
+            model_name = 'gpt-4.1-mini'
+            model_version = '2025-04-14'  # Ensure this is a valid model version
+            instance = 'msrne/shared'
+            api_version = '2025-04-01-preview'
         else:
             raise ValueError(f"Unsupported model type: {self.model_type}")
 
-        deployment_name = re.sub(r'[^a-zA-Z0-9-_]', '', f'{model_name}_{model_version}')
+        deployment_name = re.sub(r"[^a-zA-Z0-9._-]", "", f"{model_name}_{model_version}")
         endpoint = f'https://trapi.research.microsoft.com/{instance}'
 
         return AsyncAzureOpenAI(

@@ -7,6 +7,9 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 from swesmith.constants import LOG_DIR_BASE
+from swebench.harness.utils import load_swebench_dataset
+from swebench.harness.test_spec.test_spec import make_test_spec
+
 
 def load_json(filepath):
     """Load JSON data from a file."""
@@ -31,6 +34,33 @@ def extract_problem_statement(metadata_path):
     return responses.get('problem_statement', None)
 
 
+def build_repo_mapping():
+    """
+    Build mapping {repo_name: {'instance_image_key': ..., 'base_commit': ...}}
+    using SWE-bench Verified Temporal 9 train split.
+    """
+    dataset = load_swebench_dataset("ZhengyanShi/SWE-bench_Verified_Temporal_9", "train", None)
+
+    mapping = {}
+    for instance in dataset:
+        repo = instance["repo"]
+        base_commit = instance["base_commit"]
+        repo_name = f"{repo.replace('/', '__')}.{base_commit[:8]}"
+
+        # Create TestSpec to get the correct image key
+        test_spec = make_test_spec(
+            instance, namespace="swebench", instance_image_tag="latest"
+        )
+        mapping[repo_name] = {
+            "instance_image_key": test_spec.instance_image_key,
+            "base_commit": base_commit,
+        }
+    return mapping
+
+
+# Build once at import time
+_REPO_MAPPING = build_repo_mapping()
+
 def merge_problem_statements(repo, output_path):
     """Merge task instances with their corresponding problem statements."""
     
@@ -46,6 +76,9 @@ def merge_problem_statements(repo, output_path):
     
     print(f"Loaded {len(task_instances)} task instances")
     
+    # Get base_commit from repo mapping
+    base_commit = _REPO_MAPPING.get(repo, {}).get("base_commit")
+    
     # Process each instance
     merged_instances = []
     for instance in tqdm(task_instances, desc="Processing instances"):
@@ -60,7 +93,7 @@ def merge_problem_statements(repo, output_path):
         
         if not os.path.exists(metadata_path):
             print(f"Warning: Metadata file not found for {instance_id}: {metadata_path}")
-            merged_instances.append(instance)
+            # merged_instances.append(instance)
             continue
         
         # Extract problem statement
@@ -74,6 +107,8 @@ def merge_problem_statements(repo, output_path):
         # Create merged instance
         merged_instance = instance.copy()
         merged_instance['problem_statement'] = problem_statement
+        merged_instance['original_base_commit'] = base_commit
+
         merged_instances.append(merged_instance)
     
     # Ensure output directory exists

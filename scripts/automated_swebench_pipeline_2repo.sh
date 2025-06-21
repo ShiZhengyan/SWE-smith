@@ -17,8 +17,24 @@ LIMIT_PER_MODULE=10
 
 # Repository list
 REPOS=(
-    "astropy__astropy.26d14786"
-    "pylint-dev__pylint.1f8c4d9e"
+    # "astropy__astropy.26d14786"
+    # "pylint-dev__pylint.1f8c4d9e"
+    "sympy__sympy.a36caf5c"
+    "pytest-dev__pytest.3c153494"
+    "sympy__sympy.360290c4"
+    "sphinx-doc__sphinx.6cb783c0"
+    "sphinx-doc__sphinx.9bb204dc"
+    "pylint-dev__pylint.99589b08"
+    "scikit-learn__scikit-learn.586f4318"
+    "scikit-learn__scikit-learn.3eacf948"
+    # "pytest-dev__pytest.58e6a09d"
+    # "pydata__xarray.41fef6f1"
+    # "pydata__xarray.7c4e2ac8"
+    # "matplotlib__matplotlib.3dd06a46"
+    # "matplotlib__matplotlib.a3e2897b"
+    # "django__django.4a72da71"
+    # "django__django.f8fab6f9"
+    # "astropy__astropy.b16c7d12"
 )
 
 # Bug generation types
@@ -80,7 +96,7 @@ process_repo_post_generation() {
             --limit_per_file $LIMIT_PER_FILE \
             --max_combos $MAX_COMBOS 2>&1 | tee -a "$repo_log"
         rm -rf $repo
-        
+
         log "Combining patches (same module) for $repo"
         python swesmith/bug_gen/combine/same_module.py "$LOG_DIR/bug_gen/$repo" \
             --include_invalid_patches \

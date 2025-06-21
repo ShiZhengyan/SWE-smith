@@ -110,7 +110,7 @@ def parse_patch_for_entities(patch: str) -> Dict[str, Set[Tuple[str, str]]]:
             # Skip diff markers
             if line.startswith('+++') or line.startswith('---'):
                 continue
-            
+
             # Extract the actual code line
             code_line = line[1:]
 

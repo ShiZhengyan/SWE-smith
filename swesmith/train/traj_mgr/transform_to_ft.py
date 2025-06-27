@@ -132,7 +132,7 @@ if __name__ == "__main__":
         args = arg_parser.parse_args()
         main(**vars(args))
 
-    USER = "john-b-yang"
+    USER = "zhengyanshi@microsoft.com"
     TRAJS_EXP_PREFIX = "swesmith_gen_"
     PATH_TO_TRAJS = f"trajectories/{USER}/"
     PATH_TO_EVAL_DIR = f"/home/{USER}/swe-smith/logs/run_evaluation/"

@@ -265,8 +265,8 @@ def main(
 
             client, deployment_name = get_azure_client(model)
             call_kwargs = {"model": deployment_name, "messages": messages}
-            if "o3" not in model.lower():
-                call_kwargs["temperature"] = 0
+            if not any(reasoning_model in model.lower() for reasoning_model in ["o1", "o3", "o4"]):
+                call_kwargs["temperature"] = 0.5
             response = client.chat.completions.create(**call_kwargs)
             message = response.choices[0].message
 

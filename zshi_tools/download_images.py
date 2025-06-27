@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from swebench.harness.constants import KEY_INSTANCE_ID
 from swebench.harness.test_spec.test_spec import make_test_spec
-from swebench.harness.utils import load_swebench_dataset, get_predictions_from_file, str2bool
+from swebench.harness.utils import load_swebench_dataset
 
 # Set up logging to work with tqdm
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -61,7 +61,6 @@ def download_image(client, image_key, instance_id):
 def download_all_images(
     dataset_name: str,
     split: str,
-    predictions_path: str,
     namespace: str,
     instance_image_tag: str = "latest",
     instance_ids: list = None,
@@ -74,7 +73,6 @@ def download_all_images(
     Args:
         dataset_name: Name of the dataset
         split: Dataset split (test, dev, etc.)
-        predictions_path: Path to predictions file
         namespace: Namespace for remote images
         instance_image_tag: Tag for instance images
         instance_ids: Optional list of specific instance IDs to process
@@ -90,15 +88,6 @@ def download_all_images(
         print(f"❌ Failed to initialize Docker client: {e}")
         return
     
-    # Load predictions
-    try:
-        predictions = get_predictions_from_file(predictions_path, dataset_name, split)
-        predictions = {pred[KEY_INSTANCE_ID]: pred for pred in predictions}
-        print(f"✅ Loaded {len(predictions)} predictions")
-    except Exception as e:
-        print(f"❌ Failed to load predictions: {e}")
-        return
-    
     # Load dataset
     try:
         dataset = load_swebench_dataset(dataset_name, split, instance_ids)
@@ -108,10 +97,6 @@ def download_all_images(
     except Exception as e:
         print(f"❌ Failed to load dataset: {e}")
         return
-    
-    # Filter dataset to only instances with predictions (matching run_evaluation.py logic)
-    dataset = [item for item in dataset if item[KEY_INSTANCE_ID] in predictions]
-    print(f"✅ Filtered to {len(dataset)} instances with predictions")
     
     if not dataset:
         print("⚠️  No instances to process")
@@ -264,15 +249,8 @@ def main():
     parser.add_argument(
         "--split", 
         type=str, 
-        default="test",  # 与原文件一致
+        default="train",  # 与原文件一致
         help="Split of the dataset"  # 与原文件一致的描述
-    )
-    
-    parser.add_argument(
-        "--predictions_path",
-        type=str,
-        required=True,
-        help="Path to predictions file - if 'gold', uses gold predictions",  # 与原文件一致的描述
     )
     
     parser.add_argument(
@@ -314,7 +292,6 @@ def main():
     download_all_images(
         dataset_name=args.dataset_name,
         split=args.split,
-        predictions_path=args.predictions_path,
         namespace=args.namespace,
         instance_image_tag=args.instance_image_tag,
         instance_ids=args.instance_ids,

@@ -246,7 +246,7 @@ class IssueGen:
 
     def call_llm(self, messages, tools=None, tool_choice=None, **kwargs):
         # Some models (like o3) don't support custom temperature values
-        if "o3" in self.model.lower():
+        if any(reasoning_model in model.lower() for reasoning_model in ["o1", "o3", "o4"]):
             # Remove temperature from kwargs if it exists, as o3 models only support default (1)
             kwargs.pop('temperature', None)
         

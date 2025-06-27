@@ -6,7 +6,12 @@ import os
 ep = "o3"
 # ep = "o3-mini"
 # ep = "o4-mini"
-ep = "4o"
+# ep = "4o"
+# Add new models
+# ep = "gpt-4.1"
+# ep = "gpt-4.5-preview"
+# ep = "o1"
+# ep = "gpt-4.1-mini"
 
 scope = "api://trapi/.default"
 credential = get_bearer_token_provider(ChainedTokenCredential(
@@ -50,8 +55,29 @@ elif ep == "o4-mini":
     model_version = '2025-04-16'  # Ensure this is a valid model version
     instance = 'msrne/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
     api_version = '2025-04-01-preview'
+elif ep == "gpt-4.1":
+    model_name = 'gpt-4.1'  # Ensure this is a valid model name
+    model_version = '2025-04-14'  # Ensure this is a valid model version
+    instance = 'gcr/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
+    api_version = '2025-04-01-preview'
+elif ep == "gpt-4.5-preview":
+    model_name = 'gpt-4.5-preview'  # Ensure this is a valid model name
+    model_version = '2025-02-27'  # Ensure this is a valid model version
+    instance = 'msrne/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
+    api_version = '2025-04-01-preview'
+elif ep == "o1":
+    model_name = 'o1'  # Ensure this is a valid model name
+    model_version = '2024-12-17'  # Ensure this is a valid model version
+    instance = 'msrne/shared' # See https://aka.ms/trapi/models for the instance name, remove /openai (library adds it implicitly) 
+    api_version = '2025-04-01-preview'
+elif ep == "gpt-4.1-mini":
+    model_name = 'gpt-4.1-mini'
+    model_version = '2025-04-14'  # Ensure this is a valid model version
+    instance = 'msrne/shared'
+    api_version = '2025-04-01-preview'
 
-deployment_name = re.sub(r'[^a-zA-Z0-9-_]', '', f'{model_name}_{model_version}')  # If your Endpoint doesn't have harmonized deployment names, you can use the deployment name directly: see: https://aka.ms/trapi/models
+deployment_name = re.sub(r"[^a-zA-Z0-9._-]", "", f"{model_name}_{model_version}")
+print(f'Using model: {model_name}, version: {model_version}, deployment name: {deployment_name}')
 endpoint = f'https://trapi.research.microsoft.com/{instance}'
 
 client = AzureOpenAI(
@@ -59,13 +85,15 @@ client = AzureOpenAI(
     azure_ad_token_provider=credential,
     api_version=api_version,
 )
-
+# for m in client.models.list().data:
+#     print(m.id)
 tool_list = [
     {
         "type": "function",
         "function": {
             "name": "get_captal",
             "description": "get the capital city of a country",
+            # "strict": True,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -95,3 +123,4 @@ response = client.chat.completions.create(
 )
 response_content = response.choices[0].message
 print(response_content)
+

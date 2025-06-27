@@ -19,6 +19,7 @@ from swebench.harness.constants import (
     FAIL_TO_PASS,
     LOG_REPORT,
     LOG_TEST_OUTPUT,
+    MAP_REPO_VERSION_TO_SPECS,
 )
 from swebench.harness.docker_build import close_logger
 from swebench.harness.utils import run_threadpool, load_swebench_dataset
@@ -119,6 +120,7 @@ def get_test_spec_from_instance_id(instance_id: str):
     
     # Create TestSpec from instance data
     test_spec = make_test_spec(instance_data, namespace="swebench", instance_image_tag="latest")
+    test_cmd = MAP_REPO_VERSION_TO_SPECS[test_spec.repo][test_spec.version]["test_cmd"]
     if "astropy__astropy.26d14786" in instance_id:
         new_pytest_line = "pytest -rA -vv -o console_output_style=classic --tb=no"
         original_line = "pytest -rA -vv -o console_output_style=classic --tb=no astropy/utils/tests/test_misc.py"
@@ -146,9 +148,14 @@ def get_test_spec_from_instance_id(instance_id: str):
                     print(f"Successfully replaced pytest line for {instance_id}")
                     break
     else:
-        raise NotImplementedError(
-            f"TestSpec for {instance_id} not implemented. Please add it to the code."
-        )
+        # Generic handler for all other repositories
+        # Find any line that starts with test_cmd and replace it with test_cmd
+        if hasattr(test_spec, 'eval_script_list') and test_spec.eval_script_list:
+            for i, line in enumerate(test_spec.eval_script_list):
+                if line.startswith(test_cmd):
+                    test_spec.eval_script_list[i] = test_cmd
+                    print(f"Successfully replaced test command line for {instance_id}")
+                    break
 
     # Remove the git apply -v command from eval_script_list
     if hasattr(test_spec, 'eval_script_list') and test_spec.eval_script_list:

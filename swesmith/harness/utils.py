@@ -445,7 +445,7 @@ def run_patch_in_swebench_container(
             )
             if val.exit_code != 0:
                 logger.info(f"CHECKOUT FAILED: {val.output.decode(UTF8)}")
-                return logger, False·
+                return logger, False
             
             logger.info(f"Successfully set up repository and checked out commit {commit}")
 

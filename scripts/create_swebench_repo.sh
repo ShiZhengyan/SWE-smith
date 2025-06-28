@@ -2,9 +2,8 @@
 python -m swesmith.build_repo.try_install django/django configs/install_repo.sh --commit f9de1972685ab5ab31ce483a297d85d3e119088b
 
 # Download all existing SWE-smith environments at swe-bench repo
-python download_images.py \
-   --dataset_name princeton-nlp/SWE-bench_Verified \
-   --predictions_path /home/zhengyanshi/project/R2E-Gym/traj/r2egym-32b-agent-swebench-eval-20250602_153158.predictions.json \
+python zshi_tools/download_images.py \
+   --dataset_name ZhengyanShi/SWE-bench_Verified_Temporal_9 \
    --output_report image_download_report.json \
    --max_workers 32
 
